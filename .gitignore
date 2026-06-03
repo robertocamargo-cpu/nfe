@@ -1,0 +1,8 @@
+.env
+videos/
+sessao_robo/
+__pycache__/
+*.csv
+.DS_Store
+*.xlsx
+*.png
