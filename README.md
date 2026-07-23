@@ -29,8 +29,60 @@ Cruzar dados de planilhas de controle financeiro/logístico no Google Sheets com
 * **Pandas / CSV**: Para a extração, leitura e manipulação das planilhas de dados.
 * **Asyncio**: Para gerenciamento da execução assíncrona do fluxo.
 
+## 🕐 Agendamento (cron — Mac)
+
+O script é executado automaticamente via **crontab** no Mac, sem necessidade de intervenção manual.
+
+### Entrada no crontab
+
+```
+50 7-17 * * 1-5   cd /Users/nevine/Documents/nfe && /usr/bin/python3 gerar_nfe_automatica.py >> /Users/nevine/Documents/nfe/nfe_cron.log 2>&1
+```
+
+| Campo | Valor | Significado |
+|---|---|---|
+| Minuto | `50` | Aos 50 minutos de cada hora |
+| Hora | `7–17` | Das 7h às 17h |
+| Dia do mês | `*` | Todo dia |
+| Mês | `*` | Todo mês |
+| Dia da semana | `1–5` | Segunda a Sexta |
+
+**Frequência:** o robô roda **11 vezes por dia útil** — às 07:50, 08:50, 09:50, 10:50, 11:50, 12:50, 13:50, 14:50, 15:50, 16:50 e 17:50.
+
+### Lógica interna de data (qual aba processar)
+
+O script decide automaticamente qual aba da planilha verificar com base no horário da execução:
+
+| Horário da execução | Aba processada |
+|---|---|
+| Antes das 08:50 | **Dia atual** (pedidos de hoje) |
+| A partir das 08:50 | **Dia seguinte** (pedidos de amanhã) |
+
+Isso garante que a última emissão noturna do dia anterior e a primeira do dia seguinte não se sobreponham.
+
+### Log de execução
+
+Todas as saídas do script são salvas em:
+
+```
+/Users/nevine/Documents/nfe/nfe_cron.log
+```
+
+## 🤖 Bot do Discord (Sob Demanda)
+
+O projeto também conta com um bot do Discord para permitir a geração de Notas Fiscais avulsas (para pedidos específicos) a qualquer momento.
+
+Para configurá-lo e executá-lo:
+1. Certifique-se de ter preenchido a chave `DISCORD_BOT_TOKEN=` no seu arquivo `.env`.
+2. O bot precisa ficar em execução contínua. Inicie o processo com:
+   `python3 discord_bot.py`
+3. No servidor do Discord onde o bot foi adicionado, envie uma mensagem no chat com o comando:
+   `faça a nota 2020/2026` (onde 2020 é o número do pedido).
+O bot responderá confirmando o início e, em seguida, retornará o status (sucesso ou falha) da geração da NFe.
+
 ## 🚀 Como Executar
 1. Certifique-se de que o Python e as bibliotecas do `requirements.txt` estão instaladas (ex: `pip install playwright pandas`).
 2. Instale os navegadores do Playwright usando `playwright install chromium`.
 3. Verifique se o arquivo `.env` está preenchido corretamente com suas credenciais.
 4. Execute rodando o arquivo `EXECUTAR_NFE.bat` ou pelo terminal executando `python gerar_nfe_automatica.py`.
+

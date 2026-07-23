@@ -5,7 +5,7 @@ url = "https://docs.google.com/spreadsheets/d/1pVnhOWvuGKn66CmXNhEZNTPpsiQMcBUpy
 urllib.request.urlretrieve(url, "planilha.xlsx")
 
 xls = pd.ExcelFile("planilha.xlsx")
-pedidos_alvo = ['2147', '1758', '1686']
+pedidos_alvo = []
 
 print("Buscando pedidos nas abas...")
 for sheet_name in xls.sheet_names:

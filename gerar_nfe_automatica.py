@@ -5,6 +5,8 @@ import csv
 import io
 import os
 import datetime
+import json
+import urllib.request
 from playwright.async_api import async_playwright
 
 # Pegar o diretorio onde o script esta localizado
@@ -46,6 +48,82 @@ SENHA   = os.getenv("ERP_PASS", "FF(25)Nevine+")
 
 GOOGLE_USER = os.getenv("GOOGLE_USER", "")
 GOOGLE_PASS = os.getenv("GOOGLE_PASS", "")
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
+
+MAX_TENTATIVAS_GERACAO = 5
+
+
+def texto_curto(texto, limite=900):
+    texto = re.sub(r"\s+", " ", str(texto or "")).strip()
+    if len(texto) > limite:
+        return texto[:limite - 3] + "..."
+    return texto
+
+
+def motivo_erro_externo(resultado):
+    """Retorna um motivo quando o ERP indica bloqueio externo a automacao."""
+    txt = str(resultado or "").lower()
+    motivos = [
+        ("rejei", "Rejeicao retornada pelo ERP/SEFAZ"),
+        ("sefaz", "Falha ou rejeicao da SEFAZ"),
+        ("deneg", "NFe denegada"),
+        ("duplic", "Possivel duplicidade de NFe"),
+        ("certificado", "Problema de certificado no emissor"),
+        ("cnpj", "Problema cadastral/CNPJ"),
+        ("inscri", "Problema cadastral/inscricao estadual"),
+        ("cadastro", "Cadastro do cliente/produto precisa de ajuste"),
+        ("tribut", "Configuracao fiscal/tributaria precisa de ajuste"),
+        ("cfop", "Configuracao fiscal/CFOP precisa de ajuste"),
+        ("ncm", "Configuracao fiscal/NCM precisa de ajuste"),
+        ("sem estoque", "Pedido/produto sem estoque"),
+        ("estoque insuficiente", "Pedido/produto sem estoque suficiente"),
+        ("saldo insuficiente", "Saldo insuficiente para faturamento"),
+        ("ja faturado", "Pedido ja faturado ou indisponivel para gerar NFe"),
+        ("indisponivel", "ERP nao disponibilizou a geracao para este pedido"),
+        ("sem confirmacao clara", "ERP nao confirmou autorizacao da NFe"),
+    ]
+    for chave, motivo in motivos:
+        if chave in txt:
+            return motivo
+    return None
+
+
+def erro_de_sessao_ou_rede(resultado):
+    txt = str(resultado or "").lower()
+    return any(k in txt for k in [
+        "closed",
+        "network_io_suspended",
+        "navigation failed",
+        "connection refused",
+        "target page",
+        "browser has been closed",
+        "timeout",
+        "net::",
+    ])
+
+
+async def avisar_discord(mensagem):
+    if not DISCORD_WEBHOOK_URL:
+        print("      [AVISO] DISCORD_WEBHOOK_URL nao configurado. Nao enviei aviso ao Discord.")
+        return
+
+    payload = json.dumps({"content": texto_curto(mensagem, 1900)}).encode("utf-8")
+
+    def enviar():
+        req = urllib.request.Request(
+            DISCORD_WEBHOOK_URL,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            resp.read()
+
+    try:
+        await asyncio.to_thread(enviar)
+        print("      [DISCORD] Aviso enviado.")
+    except Exception as e:
+        print(f"      [AVISO] Falha ao enviar aviso ao Discord: {e}")
 
 
 def get_possiveis_nomes_mes_atual():
@@ -380,6 +458,8 @@ async def gerar_nfe_erp(erp_page, pedido):
                             await asyncio.sleep(3)
                     except: pass
                     return "OK - NFe e Boleto Gerados"
+                texto_tela = await erp_page.locator("body").inner_text(timeout=5000)
+                return "VERIFICAR - Sem confirmacao clara. Tela ERP: " + texto_curto(texto_tela, 700)
             else:
                 print(f"  [!] Botao Gerar NFE nao disponivel para o pedido {pedido}. Provavelmente ja faturado.")
                 return "PULADO - Ja Faturado ou Indisponivel"
@@ -433,6 +513,53 @@ async def realizar_login_erp(erp_page):
     except Exception as e:
         print(f"      [ERRO] Falha ao realizar login ERP: {e}")
         return False
+
+
+async def gerar_nfe_com_tentativas(context, erp_page, item):
+    pedido = item["pedido"]
+    planilha = item["planilha"]
+    ultimo_resultado = None
+
+    for tentativa in range(1, MAX_TENTATIVAS_GERACAO + 1):
+        print(f"\n  Tentativa {tentativa}/{MAX_TENTATIVAS_GERACAO} para o pedido {pedido} ({planilha})")
+        try:
+            ultimo_resultado = await gerar_nfe_erp(erp_page, pedido)
+        except Exception as e:
+            ultimo_resultado = "ERRO inesperado na automacao: " + str(e)
+
+        print(f"  Resultado Pedido {pedido} ({planilha}): {ultimo_resultado}")
+
+        if str(ultimo_resultado).startswith("OK"):
+            return erp_page, ultimo_resultado
+
+        motivo_externo = motivo_erro_externo(ultimo_resultado)
+        if motivo_externo:
+            await avisar_discord(
+                f"NFe nao gerada para o pedido {pedido} ({planilha}).\n"
+                f"Motivo externo: {motivo_externo}.\n"
+                f"Detalhe: {texto_curto(ultimo_resultado, 1200)}"
+            )
+            return erp_page, ultimo_resultado
+
+        if tentativa < MAX_TENTATIVAS_GERACAO:
+            if erro_de_sessao_ou_rede(ultimo_resultado):
+                print("      [!] Detectada falha de rede/sessao. Recuperando ERP antes de tentar novamente...")
+                await asyncio.sleep(10)
+                try:
+                    erp_page = await context.new_page()
+                    await realizar_login_erp(erp_page)
+                except Exception as e:
+                    print(f"      [!] Nao foi possivel recuperar a sessao ERP agora: {e}")
+            else:
+                print("      [!] Falha possivelmente temporaria. Tentando novamente em 5s...")
+                await asyncio.sleep(5)
+
+    await avisar_discord(
+        f"NFe nao gerada para o pedido {pedido} ({planilha}) apos "
+        f"{MAX_TENTATIVAS_GERACAO} tentativas.\n"
+        f"Ultimo retorno: {texto_curto(ultimo_resultado, 1200)}"
+    )
+    return erp_page, ultimo_resultado
 
 async def main():
     aba_param = sys.argv[1] if len(sys.argv) > 1 else ABA_ALVO
@@ -532,7 +659,7 @@ async def main():
                     status_txt = "[NFe OK]" if tem_nfe else "[PENDENTE]"
                     print(f"    L{row['linha']} | Pedido: {pedido} | NFe: '{val_h}' -> {status_txt}")
 
-                    if not tem_nfe and pedido != "16":
+                    if not tem_nfe:
                         print(f"      [!] Adicionado a fila: {pedido}")
                         todos_pendentes.append({"pedido": pedido, "planilha": p_conf['nome']})
         
@@ -549,29 +676,47 @@ async def main():
             return
 
         for item in todos_pendentes:
-            try:
-                # Resetar estado da pagina ou navegar novamente se necessario
-                res = await gerar_nfe_erp(erp_page, item["pedido"])
-                print(f"  Resultado Pedido {item['pedido']} ({item['planilha']}): {res}")
-            except Exception as e:
-                msg_erro = str(e).lower()
-                print(f"  Erro no pedido {item['pedido']}: {str(e)}")
-                
-                # Se o erro for de suspensao de rede, fechamento de pagina ou falha grave de navegacao
-                if any(k in msg_erro for k in ["closed", "network_io_suspended", "navigation failed", "connection refused"]):
-                    print("      [!] Detectada falha de rede ou sessao. Tentando recuperar...")
-                    await asyncio.sleep(10) # Esperar um pouco para a rede voltar
-                    try:
-                        erp_page = await context.new_page()
-                        await realizar_login_erp(erp_page)
-                    except:
-                        print("      [!] Nao foi possivel recuperar a sessao ERP.")
+            erp_page, _ = await gerar_nfe_com_tentativas(context, erp_page, item)
         
         print("\n" + "="*50)
         print("PROCESSAMENTO CONCLUIDO")
         print("="*50)
-        input("\nPressione ENTER para fechar o navegador...")
+        if sys.stdin.isatty():
+            input("\nPressione ENTER para fechar o navegador...")
         await context.close()
+
+async def processar_pedido_avulso(pedido: str) -> str:
+    print(f"=== Automacao NFe Avulsa: Pedido {pedido} ===")
+    if not os.path.exists(os.path.join(BASE_DIR, "videos")): 
+        os.makedirs(os.path.join(BASE_DIR, "videos"))
+    
+    local_app_data = os.getenv("LOCALAPPDATA", os.path.expanduser("~\\AppData\\Local"))
+    user_data_dir = os.path.join(local_app_data, "Automacao_NFe_Transporte", "sessao_robo")
+    if not os.path.exists(user_data_dir): 
+        os.makedirs(user_data_dir, exist_ok=True)
+
+    async with async_playwright() as p:
+        context = await p.chromium.launch_persistent_context(
+            user_data_dir,
+            headless=False,
+            slow_mo=200,
+            viewport={"width": 1366, "height": 768},
+            record_video_dir=os.path.join(BASE_DIR, "videos/")
+        )
+        
+        try:
+            erp_page = context.pages[0] if context.pages else await context.new_page()
+            erp_page.on("dialog", lambda dialog: dialog.accept())
+
+            if not await realizar_login_erp(erp_page):
+                return "FALHA: Nao foi possivel fazer login no ERP."
+
+            item = {"pedido": pedido, "planilha": "Discord (Avulso)"}
+            _, resultado = await gerar_nfe_com_tentativas(context, erp_page, item)
+            
+            return str(resultado)
+        finally:
+            await context.close()
 
 if __name__ == "__main__":
     asyncio.run(main())
