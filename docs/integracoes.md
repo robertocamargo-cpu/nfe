@@ -82,17 +82,18 @@ O sistema se comunica com 3 serviços externos: ERP ADMSIS, Google Sheets e Disc
 
 ## 3. Discord
 
-### Bot SofIA (Pedidos Avulsos)
+### Bot SofIA (Pedidos Avulsos + Relatórios do Cron)
 
 | Campo | Detalhe |
 |-------|---------|
 | **Nome** | SofIA#7305 |
-| **Objetivo** | Receber pedidos manuais de NFe da equipe |
+| **Objetivo** | Receber pedidos manuais de NFe + enviar relatórios automáticos do cron |
 | **Autenticação** | Token do bot (`DISCORD_BOT_TOKEN`) |
+| **Canal de relatórios** | Configurado via `DISCORD_CHANNEL_ID` no `.env` |
 | **Biblioteca** | discord.py 2.3.2 |
 | **Intents necessários** | `message_content = True` |
 
-**Como Usar:**
+**Como Usar (pedido avulso):**
 ```
 @SofIA crie a NF 9999
 @SofIA gere a nfe 9999
@@ -105,22 +106,47 @@ O sistema se comunica com 3 serviços externos: ERP ADMSIS, Google Sheets e Disc
 - Se a SofIA estiver processando um pedido e chegar outro, ela coloca na fila e informa a posição
 - Processamento é sempre sequencial (1 pedido de cada vez) para não sobrecarregar o ERP
 
-### Webhook de Alertas (Avisos Automáticos)
+---
 
-| Campo | Detalhe |
-|-------|---------|
-| **Objetivo** | Receber alertas do cron quando há erros ou rejeições |
-| **URL** | Configurada no `.env` via `DISCORD_WEBHOOK_URL` |
-| **Quando dispara** | NFe rejeitada pela SEFAZ ou falha após 5 tentativas |
+### Relatório Automático do Cron
 
-**Formato das mensagens enviadas:**
+Ao final de cada execução agendada, a SofIA envia um **relatório consolidado** no canal configurado. Exemplo de mensagem:
+
 ```
-NFe nao gerada para o pedido 9999 (Planilha Principal).
-Motivo externo: Rejeicao retornada pelo ERP/SEFAZ.
-Detalhe: [texto da tela do ERP]
+📋 Relatório NFe — 10/08/2026 às 11:50
+
+✅ NFes geradas com sucesso:
+• Pedido 1585 (Planilha Principal) → ✅ OK - NFe e Boleto Gerados
+• Pedido 2001 (Planilha Transporte) → ✅ OK - NFe e Boleto Gerados
+
+⏭️ Já faturados (pulados):
+• Pedido 1580 (Planilha Valdex) → ⏭️ Já faturado
+
+❌ Erros — requerem atenção:
+• Pedido 1595 (Planilha Principal) → ❌ Rejeicao retornada pelo ERP/SEFAZ
 ```
+
+Se não houver nenhum pedido pendente:
+```
+📋 Relatório NFe — 10/08/2026 às 12:50
+
+✅ Nenhum pedido pendente encontrado nas planilhas.
+```
+
+**Prioridade de envio:**
+1. **API do Bot** (mensagem aparece como SofIA) — usa `DISCORD_BOT_TOKEN` + `DISCORD_CHANNEL_ID`
+2. **Webhook fallback** — usa `DISCORD_WEBHOOK_URL` (mensagem genérica, sem identidade da SofIA)
+3. Se nenhum estiver configurado, apenas registra no log
+
+---
+
+### Alertas de Erro Pontuais
+
+Além do relatório final, a SofIA também manda alertas imediatos quando:
+- Um pedido é rejeitado pela SEFAZ (não vale tentar de novo)
+- Um pedido falha em todas as 5 tentativas
 
 **O que acontece se o Discord cair?**
-- O robô tenta enviar o alerta com timeout de 20 segundos
-- Se falhar, registra no log: `Falha ao enviar aviso ao Discord`
+- O robô tenta enviar com timeout de 20 segundos
+- Se falhar, registra no log: `Falha ao enviar relatório Discord`
 - A automação **continua normalmente** — o Discord é só notificação, não bloqueia o processo

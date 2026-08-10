@@ -64,6 +64,8 @@ if not USUARIO or not SENHA:
 GOOGLE_USER = os.getenv("GOOGLE_USER", "")
 GOOGLE_PASS = os.getenv("GOOGLE_PASS", "")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
+DISCORD_BOT_TOKEN   = os.getenv("DISCORD_BOT_TOKEN", "")
+DISCORD_CHANNEL_ID  = os.getenv("DISCORD_CHANNEL_ID", "")
 
 MAX_TENTATIVAS_GERACAO = 5
 
@@ -117,14 +119,29 @@ def erro_de_sessao_ou_rede(resultado):
     ])
 
 
-async def avisar_discord(mensagem):
-    if not DISCORD_WEBHOOK_URL:
-        logging.info("      [AVISO] DISCORD_WEBHOOK_URL nao configurado. Nao enviei aviso ao Discord.")
+def _enviar_mensagem_discord_sync(mensagem: str):
+    """Envia mensagem como a SofIA (bot) via API. Fallback para webhook se não houver bot configurado."""
+    texto = texto_curto(mensagem, 1900)
+    payload = json.dumps({"content": texto}).encode("utf-8")
+
+    # Preferir API do Bot (mensagem aparece como SofIA)
+    if DISCORD_BOT_TOKEN and DISCORD_CHANNEL_ID:
+        url = f"https://discord.com/api/v10/channels/{DISCORD_CHANNEL_ID}/messages"
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bot {DISCORD_BOT_TOKEN}",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            resp.read()
         return
 
-    payload = json.dumps({"content": texto_curto(mensagem, 1900)}).encode("utf-8")
-
-    def enviar():
+    # Fallback: webhook genérico
+    if DISCORD_WEBHOOK_URL:
         req = urllib.request.Request(
             DISCORD_WEBHOOK_URL,
             data=payload,
@@ -133,12 +150,74 @@ async def avisar_discord(mensagem):
         )
         with urllib.request.urlopen(req, timeout=20) as resp:
             resp.read()
+        return
 
+    raise RuntimeError("Nenhum meio de envio Discord configurado (DISCORD_BOT_TOKEN+DISCORD_CHANNEL_ID ou DISCORD_WEBHOOK_URL).")
+
+
+async def avisar_discord(mensagem):
+    """Envia aviso pontual de erro/alerta como a SofIA."""
+    if not DISCORD_BOT_TOKEN and not DISCORD_WEBHOOK_URL:
+        logging.info("      [AVISO] Discord nao configurado. Defina DISCORD_BOT_TOKEN+DISCORD_CHANNEL_ID no .env.")
+        return
     try:
-        await asyncio.to_thread(enviar)
+        await asyncio.to_thread(_enviar_mensagem_discord_sync, mensagem)
         logging.info("      [DISCORD] Aviso enviado.")
     except Exception as e:
         logging.info(f"      [AVISO] Falha ao enviar aviso ao Discord: {e}")
+
+
+async def sofia_relatorio(resultados: list):
+    """
+    Envia um relatório consolidado da rodada do cron como a SofIA.
+    resultados: lista de dicts com chaves 'pedido', 'planilha', 'resultado'
+    """
+    if not DISCORD_BOT_TOKEN and not DISCORD_WEBHOOK_URL:
+        return
+
+    agora = datetime.datetime.now().strftime("%d/%m/%Y às %H:%M")
+
+    ok_lines    = []
+    pulado_lines = []
+    erro_lines  = []
+
+    for r in resultados:
+        pedido   = r["pedido"]
+        planilha = r["planilha"]
+        res      = str(r["resultado"])
+        linha    = f"• Pedido **{pedido}** ({planilha})"
+
+        if res.startswith("OK"):
+            ok_lines.append(f"{linha} → ✅ {res}")
+        elif "PULADO" in res or "Ja Faturado" in res:
+            pulado_lines.append(f"{linha} → ⏭️ Já faturado")
+        else:
+            motivo = motivo_erro_externo(res) or texto_curto(res, 200)
+            erro_lines.append(f"{linha} → ❌ {motivo}")
+
+    partes = [f"📋 **Relatório NFe — {agora}**"]
+
+    if ok_lines:
+        partes.append("\n✅ **NFes geradas com sucesso:**")
+        partes.extend(ok_lines)
+
+    if pulado_lines:
+        partes.append("\n⏭️ **Já faturados (pulados):**")
+        partes.extend(pulado_lines)
+
+    if erro_lines:
+        partes.append("\n❌ **Erros — requerem atenção:**")
+        partes.extend(erro_lines)
+
+    if not ok_lines and not pulado_lines and not erro_lines:
+        partes.append("\n✅ Nenhum pedido pendente encontrado nas planilhas.")
+
+    mensagem_final = "\n".join(partes)
+    try:
+        await asyncio.to_thread(_enviar_mensagem_discord_sync, mensagem_final)
+        logging.info("[DISCORD] Relatório final enviado pela SofIA.")
+    except Exception as e:
+        logging.info(f"[AVISO] Falha ao enviar relatório Discord: {e}")
 
 
 def get_possiveis_nomes_mes_atual():
@@ -693,6 +772,7 @@ async def main():
         
         if not todos_pendentes:
             logging.info("\n  [OK] Nada pendente em nenhuma planilha!")
+            await sofia_relatorio([])
             await context.close()
             return
 
@@ -703,9 +783,19 @@ async def main():
             await context.close()
             return
 
+        # Coletar todos os resultados para o relatório final
+        resultados_finais = []
         for item in todos_pendentes:
-            erp_page, _ = await gerar_nfe_com_tentativas(context, erp_page, item)
+            erp_page, resultado = await gerar_nfe_com_tentativas(context, erp_page, item)
+            resultados_finais.append({
+                "pedido":   item["pedido"],
+                "planilha": item["planilha"],
+                "resultado": resultado,
+            })
         
+        # Enviar relatório consolidado via SofIA
+        await sofia_relatorio(resultados_finais)
+
         logging.info("\n" + "="*50)
         logging.info("PROCESSAMENTO CONCLUIDO")
         logging.info("="*50)

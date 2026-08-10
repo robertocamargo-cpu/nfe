@@ -70,10 +70,12 @@ GOOGLE_PASS=
 | Variável | Obrigatória | Descrição |
 |----------|-------------|-----------|
 | `DISCORD_BOT_TOKEN` | ✅ Sim (para o bot) | Token do bot SofIA no Discord |
-| `DISCORD_WEBHOOK_URL` | ⚠️ Recomendada | Webhook para avisos automáticos de erro |
+| `DISCORD_CHANNEL_ID` | ✅ Sim (para relatórios do cron) | ID do canal onde a SofIA enviará os relatórios automáticos |
+| `DISCORD_WEBHOOK_URL` | ⚠️ Opcional (fallback) | Webhook genérico (usado apenas se o bot não estiver configurado) |
 
 ```
 DISCORD_BOT_TOKEN=
+DISCORD_CHANNEL_ID=
 DISCORD_WEBHOOK_URL=
 ```
 
@@ -83,12 +85,13 @@ DISCORD_WEBHOOK_URL=
 3. Vá em **Bot** → **Reset Token**
 4. Copie o novo token e cole no `.env`
 
-**Como obter o Webhook:**
-1. No servidor do Discord, vá ao canal desejado
-2. Editar Canal → Integrações → Webhooks → Criar
-3. Copie a URL gerada
+**Como obter o Channel ID:**
+1. No Discord, vá em **Configurações** → **Avançado** → ative **Modo Desenvolvedor**
+2. Clique com o botão direito no canal desejado
+3. Clique em **"Copiar ID do canal"**
+4. Cole o número no `.env` como `DISCORD_CHANNEL_ID`
 
-**O que acontece se faltar o Webhook:** O bot funciona normalmente para pedidos avulsos, mas avisos automáticos de erro do cron não são enviados. O sistema registra no log: `DISCORD_WEBHOOK_URL nao configurado`.
+**O que acontece se faltar o Channel ID:** O cron envia via webhook como fallback (mensagem genérica, não aparece como SofIA). Se ambos estiverem ausentes, nenhum aviso é enviado mas a automação continua funcionando normalmente.
 
 ---
 
