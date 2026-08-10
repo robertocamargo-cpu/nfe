@@ -1,6 +1,8 @@
 import asyncio
 import re
 import sys
+import logging
+
 import csv
 import io
 import os
@@ -11,6 +13,15 @@ from playwright.async_api import async_playwright
 
 # Pegar o diretorio onde o script esta localizado
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler(os.path.join(BASE_DIR, "logs", "nfe_cron.log")),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
 
 # Tentar carregar variaveis do arquivo .env se ele existir
 try:
@@ -43,8 +54,12 @@ def get_target_day():
 ABA_ALVO = get_target_day()
 
 ERP_URL = "https://erp.admsis.com/Home"
-USUARIO = os.getenv("ERP_USER", "N_FERNANDO")
-SENHA   = os.getenv("ERP_PASS", "FF(25)Nevine+")
+USUARIO = os.getenv("ERP_USER")
+SENHA   = os.getenv("ERP_PASS")
+
+if not USUARIO or not SENHA:
+    logging.info("ERRO FATAL: Credenciais do ERP não encontradas no .env!")
+    sys.exit(1)
 
 GOOGLE_USER = os.getenv("GOOGLE_USER", "")
 GOOGLE_PASS = os.getenv("GOOGLE_PASS", "")
@@ -104,7 +119,7 @@ def erro_de_sessao_ou_rede(resultado):
 
 async def avisar_discord(mensagem):
     if not DISCORD_WEBHOOK_URL:
-        print("      [AVISO] DISCORD_WEBHOOK_URL nao configurado. Nao enviei aviso ao Discord.")
+        logging.info("      [AVISO] DISCORD_WEBHOOK_URL nao configurado. Nao enviei aviso ao Discord.")
         return
 
     payload = json.dumps({"content": texto_curto(mensagem, 1900)}).encode("utf-8")
@@ -121,9 +136,9 @@ async def avisar_discord(mensagem):
 
     try:
         await asyncio.to_thread(enviar)
-        print("      [DISCORD] Aviso enviado.")
+        logging.info("      [DISCORD] Aviso enviado.")
     except Exception as e:
-        print(f"      [AVISO] Falha ao enviar aviso ao Discord: {e}")
+        logging.info(f"      [AVISO] Falha ao enviar aviso ao Discord: {e}")
 
 
 def get_possiveis_nomes_mes_atual():
@@ -184,7 +199,7 @@ async def fazer_login_google(page, user, password):
     is_login_page = "accounts.google.com" in page.url or await page.locator('input[type="email"], [data-identifier], #identifierNext').count() > 0
     
     if is_login_page:
-        print("      [LOGIN] Detectado necessidade de interação no Google...")
+        logging.info("      [LOGIN] Detectado necessidade de interação no Google...")
         try:
             # 1. Verificar se ja existe a conta na lista (Seleção de conta)
             conta_na_lista = page.locator(f'[data-email="{user}"], [data-identifier="{user}"]').first
@@ -192,7 +207,7 @@ async def fazer_login_google(page, user, password):
                 conta_na_lista = page.get_by_text(user).first
 
             if await conta_na_lista.count() > 0 and await conta_na_lista.is_visible():
-                print(f"      [LOGIN] Selecionando conta já listada: {user}")
+                logging.info(f"      [LOGIN] Selecionando conta já listada: {user}")
                 await conta_na_lista.click()
                 await asyncio.sleep(2)
             
@@ -211,7 +226,7 @@ async def fazer_login_google(page, user, password):
             if await page.locator('input[type="password"]').count() > 0:
                 await page.fill('input[type="password"]', password)
                 await page.click('#passwordNext')
-                print("      [LOGIN] Senha enviada. Aguardando...")
+                logging.info("      [LOGIN] Senha enviada. Aguardando...")
                 await asyncio.sleep(5)
             
             # 4. Lidar com botões de "Continuar" ou "Confirmar"
@@ -222,12 +237,12 @@ async def fazer_login_google(page, user, password):
 
             # Se ainda estiver na página de contas, pode ser MFA
             if "accounts.google.com" in page.url:
-                print("      [!] Google pode estar solicitando MFA/CAPTCHA. Verifique o navegador.")
+                logging.info("      [!] Google pode estar solicitando MFA/CAPTCHA. Verifique o navegador.")
                 for _ in range(30):
                     if "accounts.google.com" not in page.url: break
                     await asyncio.sleep(1)
         except Exception as e:
-            print(f"      [AVISO] Erro no login automático: {e}")
+            logging.info(f"      [AVISO] Erro no login automático: {e}")
 
 async def esperar_carregamento_erp(erp_page):
     """Espera que mensagens de 'Aguarde' ou overlays sumam."""
@@ -244,7 +259,7 @@ async def esperar_carregamento_erp(erp_page):
 
 async def obter_gid_da_aba(page, url_planilha, aba, is_mes_atual=False):
     """Navega para a planilha, clica na aba e retorna o GID da URL com retentativas."""
-    print(f"[1/4] Abrindo planilha: {url_planilha[:50]}...")
+    logging.info(f"[1/4] Abrindo planilha: {url_planilha[:50]}...")
     
     # Adicionar lógica de retentativa para abertura da planilha
     max_tentativas = 3
@@ -255,10 +270,10 @@ async def obter_gid_da_aba(page, url_planilha, aba, is_mes_atual=False):
             break
         except Exception as e:
             if tentativa < max_tentativas - 1:
-                print(f"      [!] Falha na tentativa {tentativa+1}. Tentando novamente em 5s... ({e})")
+                logging.info(f"      [!] Falha na tentativa {tentativa+1}. Tentando novamente em 5s... ({e})")
                 await asyncio.sleep(5)
             else:
-                print(f"      [ERRO] Nao foi possivel abrir a planilha apos {max_tentativas} tentativas.")
+                logging.info(f"      [ERRO] Nao foi possivel abrir a planilha apos {max_tentativas} tentativas.")
                 return page, None
     
     # Tentar login se necessário
@@ -266,14 +281,14 @@ async def obter_gid_da_aba(page, url_planilha, aba, is_mes_atual=False):
     
     try:
         await page.wait_for_selector(".docs-sheet-tab-name", timeout=120000)
-        print("      Planilha carregada!")
+        logging.info("      Planilha carregada!")
     except Exception:
-        print("      [ERRO] Timeout na planilha.")
+        logging.info("      [ERRO] Timeout na planilha.")
         return page, None
 
     await asyncio.sleep(2)
 
-    print("[2/4] Selecionando aba alvo...")
+    logging.info("[2/4] Selecionando aba alvo...")
     tabs = await page.query_selector_all(".docs-sheet-tab-name")
     nomes = []
     
@@ -286,7 +301,7 @@ async def obter_gid_da_aba(page, url_planilha, aba, is_mes_atual=False):
             nomes.append(nome)
             if nome.upper() in possiveis:
                 await tab.click()
-                print("      Aba do mês atual '" + nome + "' selecionada.")
+                logging.info("      Aba do mês atual '" + nome + "' selecionada.")
                 aba_selecionada = True
                 await asyncio.sleep(3)
                 break
@@ -298,7 +313,7 @@ async def obter_gid_da_aba(page, url_planilha, aba, is_mes_atual=False):
             nome_limpo = nome.lstrip("0")
             if nome == aba or (aba_limpa != "" and aba_limpa == nome_limpo):
                 await tab.click()
-                print(f"      Aba '{nome}' selecionada (correspondente a '{aba}').")
+                logging.info(f"      Aba '{nome}' selecionada (correspondente a '{aba}').")
                 aba_selecionada = True
                 await asyncio.sleep(3)
                 break
@@ -308,16 +323,16 @@ async def obter_gid_da_aba(page, url_planilha, aba, is_mes_atual=False):
         match = re.search(r"gid=(\d+)", url_atual)
         if match:
             gid = match.group(1)
-            print("      GID encontrado: " + gid)
+            logging.info("      GID encontrado: " + gid)
             return page, gid
         else:
-            print("      [AVISO] GID nao encontrado na URL.")
+            logging.info("      [AVISO] GID nao encontrado na URL.")
             return page, None
 
     if is_mes_atual:
-        print("      [ERRO] Aba do mês atual não encontrada. Abas disponíveis: " + str(nomes))
+        logging.info("      [ERRO] Aba do mês atual não encontrada. Abas disponíveis: " + str(nomes))
     else:
-        print("      [ERRO] Aba '" + aba + "' nao encontrada. Abas disponíveis: " + str(nomes))
+        logging.info("      [ERRO] Aba '" + aba + "' nao encontrada. Abas disponíveis: " + str(nomes))
     return page, None
 
 
@@ -329,7 +344,7 @@ async def ler_dados_csv(page, url_planilha, gid):
     
     export_url = ("https://docs.google.com/spreadsheets/d/" + sheet_id +
                   "/export?format=csv&gid=" + gid)
-    print("[3/4] Baixando dados via CSV...")
+    logging.info("[3/4] Baixando dados via CSV...")
 
     tmp_path = os.path.join(tempfile.gettempdir(), "planilha_nfe_" + gid + ".csv")
     
@@ -343,18 +358,18 @@ async def ler_dados_csv(page, url_planilha, gid):
             except Exception as e:
                 # O Playwright gera um erro proposital quando um goto vira download
                 if "Download is starting" not in str(e):
-                    print(f"      [AVISO] Erro no goto: {e}")
+                    logging.info(f"      [AVISO] Erro no goto: {e}")
         download = await download_info.value
         await download.save_as(tmp_path)
     except Exception as e:
-        print("      [ERRO] Download falhou: " + str(e))
+        logging.info("      [ERRO] Download falhou: " + str(e))
         return None
 
     try:
         with open(tmp_path, encoding="utf-8", errors="replace") as f:
             conteudo = f.read()
     except Exception as e:
-        print("      [ERRO] Leitura do arquivo: " + str(e))
+        logging.info("      [ERRO] Leitura do arquivo: " + str(e))
         return None
 
     linhas = []
@@ -363,13 +378,13 @@ async def ler_dados_csv(page, url_planilha, gid):
         if any(cell.strip() for cell in row):
             linhas.append({"linha": i + 1, "cells": row})
 
-    print("      " + str(len(linhas)) + " linhas encontradas no CSV.")
+    logging.info("      " + str(len(linhas)) + " linhas encontradas no CSV.")
     return linhas
 
 
 async def gerar_nfe_erp(erp_page, pedido):
     """Fluxo ERP completo."""
-    print("\n  --- Pedido " + pedido + " ---")
+    logging.info("\n  --- Pedido " + pedido + " ---")
 
     # Tentar navegar com retentativas para lidar com instabilidades de rede
     max_retries = 3
@@ -380,7 +395,7 @@ async def gerar_nfe_erp(erp_page, pedido):
         except Exception as e:
             if i == max_retries - 1:
                 return f"ERRO fatal ao acessar tela de NFe: {str(e)}"
-            print(f"      [!] Falha ao carregar tela (tentativa {i+1}). Tentando novamente em 5s... ({str(e)})")
+            logging.info(f"      [!] Falha ao carregar tela (tentativa {i+1}). Tentando novamente em 5s... ({str(e)})")
             await asyncio.sleep(5)
             
     await asyncio.sleep(3)
@@ -410,7 +425,7 @@ async def gerar_nfe_erp(erp_page, pedido):
     try:
         btn_filtrar = erp_page.locator('button:has-text("FILTRAR"), button:has-text("Filtrar")').first
         await btn_filtrar.click(timeout=60000)
-        print("  Clicado em Filtrar.")
+        logging.info("  Clicado em Filtrar.")
     except Exception as e:
         return "ERRO ao clicar Filtrar: " + str(e)
     
@@ -439,29 +454,32 @@ async def gerar_nfe_erp(erp_page, pedido):
             btn_gerar = erp_page.get_by_text(re.compile(r"Gerar NFE", re.IGNORECASE)).last
             
             if await btn_gerar.count() > 0 and await btn_gerar.is_visible():
-                print(f"  Botao Gerar NFE encontrado para o pedido {pedido}. Iniciando emissao...")
+                logging.info(f"  Botao Gerar NFE encontrado para o pedido {pedido}. Iniciando emissao...")
                 await btn_gerar.click()
-                await asyncio.sleep(2)
-                await erp_page.click('button:has-text("SIM"), button:has-text("Sim")')
-                await asyncio.sleep(5)
+                
+                # Espera dinâmica pelo botão SIM
+                btn_sim = erp_page.locator('button:has-text("SIM"), button:has-text("Sim")')
+                await btn_sim.wait_for(state="visible", timeout=10000)
+                await btn_sim.click()
+                
                 await esperar_carregamento_erp(erp_page)
 
                 # Verificar autorizacao e gerar boleto
                 conteudo = (await erp_page.content()).lower()
                 if any(k in conteudo for k in ["autoriza", "sucesso", "emitida"]):
-                    print("  NFe autorizada. Gerando boleto...")
+                    logging.info("  NFe autorizada. Gerando boleto...")
                     try:
                         btn_boleto = erp_page.get_by_text(re.compile(r"Boleto", re.IGNORECASE)).last
                         if await btn_boleto.count() > 0:
                             await btn_boleto.click()
-                            print("  Clicado em Boleto.")
+                            logging.info("  Clicado em Boleto.")
                             await asyncio.sleep(3)
                     except: pass
                     return "OK - NFe e Boleto Gerados"
                 texto_tela = await erp_page.locator("body").inner_text(timeout=5000)
                 return "VERIFICAR - Sem confirmacao clara. Tela ERP: " + texto_curto(texto_tela, 700)
             else:
-                print(f"  [!] Botao Gerar NFE nao disponivel para o pedido {pedido}. Provavelmente ja faturado.")
+                logging.info(f"  [!] Botao Gerar NFE nao disponivel para o pedido {pedido}. Provavelmente ja faturado.")
                 return "PULADO - Ja Faturado ou Indisponivel"
         except Exception as e:
             return "ERRO no processo de geracao: " + str(e)
@@ -473,12 +491,12 @@ async def gerar_nfe_erp(erp_page, pedido):
 
 async def realizar_login_erp(erp_page):
     """Realiza o login no ERP se necessário."""
-    print("\n  [ERP] Acessando sistema...")
+    logging.info("\n  [ERP] Acessando sistema...")
     try:
         await erp_page.goto(ERP_URL, timeout=90000, wait_until="load")
         
         # Verificar se ja esta logado (se ja vemos o nome do usuario ou menu)
-        print("      Verificando sessao ativa...")
+        logging.info("      Verificando sessao ativa...")
         usuario_logado = erp_page.locator(f'text="{USUARIO}"').first
         dashboard = erp_page.locator('text="Faturamento", text="Pedidos"').first
         
@@ -490,11 +508,11 @@ async def realizar_login_erp(erp_page):
         except: pass
 
         if esta_logado:
-            print(f"      Sessao ativa detectada ({USUARIO}). Pulando login.")
+            logging.info(f"      Sessao ativa detectada ({USUARIO}). Pulando login.")
             return True
         else:
             # Nao esta logado, fazer o processo normal
-            print("      Sessao nao encontrada. Iniciando login...")
+            logging.info("      Sessao nao encontrada. Iniciando login...")
             try:
                 await erp_page.wait_for_selector('input[name="usu_codigo"]', timeout=20000)
             except Exception:
@@ -507,11 +525,11 @@ async def realizar_login_erp(erp_page):
             await erp_page.click('button#login')
             await asyncio.sleep(5)
             await esperar_carregamento_erp(erp_page)
-            print("      Login realizado com sucesso.")
+            logging.info("      Login realizado com sucesso.")
             return True
         
     except Exception as e:
-        print(f"      [ERRO] Falha ao realizar login ERP: {e}")
+        logging.info(f"      [ERRO] Falha ao realizar login ERP: {e}")
         return False
 
 
@@ -521,13 +539,13 @@ async def gerar_nfe_com_tentativas(context, erp_page, item):
     ultimo_resultado = None
 
     for tentativa in range(1, MAX_TENTATIVAS_GERACAO + 1):
-        print(f"\n  Tentativa {tentativa}/{MAX_TENTATIVAS_GERACAO} para o pedido {pedido} ({planilha})")
+        logging.info(f"\n  Tentativa {tentativa}/{MAX_TENTATIVAS_GERACAO} para o pedido {pedido} ({planilha})")
         try:
             ultimo_resultado = await gerar_nfe_erp(erp_page, pedido)
         except Exception as e:
             ultimo_resultado = "ERRO inesperado na automacao: " + str(e)
 
-        print(f"  Resultado Pedido {pedido} ({planilha}): {ultimo_resultado}")
+        logging.info(f"  Resultado Pedido {pedido} ({planilha}): {ultimo_resultado}")
 
         if str(ultimo_resultado).startswith("OK"):
             return erp_page, ultimo_resultado
@@ -543,15 +561,15 @@ async def gerar_nfe_com_tentativas(context, erp_page, item):
 
         if tentativa < MAX_TENTATIVAS_GERACAO:
             if erro_de_sessao_ou_rede(ultimo_resultado):
-                print("      [!] Detectada falha de rede/sessao. Recuperando ERP antes de tentar novamente...")
+                logging.info("      [!] Detectada falha de rede/sessao. Recuperando ERP antes de tentar novamente...")
                 await asyncio.sleep(10)
                 try:
                     erp_page = await context.new_page()
                     await realizar_login_erp(erp_page)
                 except Exception as e:
-                    print(f"      [!] Nao foi possivel recuperar a sessao ERP agora: {e}")
+                    logging.info(f"      [!] Nao foi possivel recuperar a sessao ERP agora: {e}")
             else:
-                print("      [!] Falha possivelmente temporaria. Tentando novamente em 5s...")
+                logging.info("      [!] Falha possivelmente temporaria. Tentando novamente em 5s...")
                 await asyncio.sleep(5)
 
     await avisar_discord(
@@ -563,7 +581,7 @@ async def gerar_nfe_com_tentativas(context, erp_page, item):
 
 async def main():
     aba_param = sys.argv[1] if len(sys.argv) > 1 else ABA_ALVO
-    print("=== Automacao NFe Independente ===")
+    logging.info("=== Automacao NFe Independente ===")
 
     planilhas_config = [
         {
@@ -579,18 +597,28 @@ async def main():
             "aba": None,
             "is_mes_atual": True,
             "force_idx_h": 9 # Coluna J (0-indexed)
+        },
+        {
+            "nome": "Planilha Valdex",
+            "url": "https://docs.google.com/spreadsheets/d/1hIVyui_6Ciol94CVtdhNDv7WKSkqz8lM79I0z9TvA_c/edit",
+            "aba": aba_param,
+            "is_mes_atual": False,
+            "force_idx_h": 7 # Coluna H (Nota Fiscal Filial)
         }
     ]
 
     if not os.path.exists(os.path.join(BASE_DIR, "videos")): 
         os.makedirs(os.path.join(BASE_DIR, "videos"))
     
-    # Usar LOCALAPPDATA para evitar conflitos de sincronizacao do OneDrive
-    local_app_data = os.getenv("LOCALAPPDATA", os.path.expanduser("~\\AppData\\Local"))
+    # Detectar o sistema operacional para definir o caminho da sessao corretamente
+    if os.name == 'nt':  # Windows
+        local_app_data = os.getenv("LOCALAPPDATA", os.path.expanduser("~\\AppData\\Local"))
+    else:  # Mac / Linux
+        local_app_data = os.path.expanduser("~/Library/Application Support")
     user_data_dir = os.path.join(local_app_data, "Automacao_NFe_Transporte", "sessao_robo")
     if not os.path.exists(user_data_dir): 
         os.makedirs(user_data_dir, exist_ok=True)
-    print(f"      Sessao do robo em: {user_data_dir}")
+    logging.info(f"      Sessao do robo em: {user_data_dir}")
 
     async with async_playwright() as p:
         context = await p.chromium.launch_persistent_context(
@@ -610,7 +638,7 @@ async def main():
         todos_pendentes = []
 
         for p_conf in planilhas_config:
-            print(f"\n--- Processando {p_conf['nome']} ---")
+            logging.info(f"\n--- Processando {p_conf['nome']} ---")
             page, gid = await obter_gid_da_aba(page, p_conf['url'], p_conf['aba'], p_conf['is_mes_atual'])
             if gid is None: 
                 continue
@@ -620,9 +648,9 @@ async def main():
                 continue
 
             # Mostrar as primeiras linhas para depurar cabecalho
-            print("\n  Depuracao de cabecalho (primeiras 3 linhas do CSV):")
+            logging.info("\n  Depuracao de cabecalho (primeiras 3 linhas do CSV):")
             for l in linhas[:3]:
-                print(f"    L{l['linha']}: {l['cells']}")
+                logging.info(f"    L{l['linha']}: {l['cells']}")
 
             # Detectar indices de forma mais robusta (L2 e o cabecalho)
             idx_c, idx_h = 2, 7 # Padrao encontrado no debug
@@ -640,7 +668,7 @@ async def main():
             if p_conf['force_idx_h'] is not None:
                 idx_h = p_conf['force_idx_h']
 
-            print(f"\n  Iniciando analise de {len(linhas)} linhas...")
+            logging.info(f"\n  Iniciando analise de {len(linhas)} linhas...")
             for row in linhas:
                 if row["linha"] <= 2: continue # Pular cabecalho
                 
@@ -657,18 +685,18 @@ async def main():
                     tem_nfe = numero_antes_da_barra(val_h)
                     # DEBUG de cada linha para o usuario ver
                     status_txt = "[NFe OK]" if tem_nfe else "[PENDENTE]"
-                    print(f"    L{row['linha']} | Pedido: {pedido} | NFe: '{val_h}' -> {status_txt}")
+                    logging.info(f"    L{row['linha']} | Pedido: {pedido} | NFe: '{val_h}' -> {status_txt}")
 
                     if not tem_nfe:
-                        print(f"      [!] Adicionado a fila: {pedido}")
+                        logging.info(f"      [!] Adicionado a fila: {pedido}")
                         todos_pendentes.append({"pedido": pedido, "planilha": p_conf['nome']})
         
         if not todos_pendentes:
-            print("\n  [OK] Nada pendente em nenhuma planilha!")
+            logging.info("\n  [OK] Nada pendente em nenhuma planilha!")
             await context.close()
             return
 
-        print("\n  Pendentes totais: " + str([p["pedido"] for p in todos_pendentes]))
+        logging.info("\n  Pendentes totais: " + str([p["pedido"] for p in todos_pendentes]))
 
         erp_page = await context.new_page()
         if not await realizar_login_erp(erp_page):
@@ -678,19 +706,22 @@ async def main():
         for item in todos_pendentes:
             erp_page, _ = await gerar_nfe_com_tentativas(context, erp_page, item)
         
-        print("\n" + "="*50)
-        print("PROCESSAMENTO CONCLUIDO")
-        print("="*50)
+        logging.info("\n" + "="*50)
+        logging.info("PROCESSAMENTO CONCLUIDO")
+        logging.info("="*50)
         if sys.stdin.isatty():
             input("\nPressione ENTER para fechar o navegador...")
         await context.close()
 
 async def processar_pedido_avulso(pedido: str) -> str:
-    print(f"=== Automacao NFe Avulsa: Pedido {pedido} ===")
+    logging.info(f"=== Automacao NFe Avulsa: Pedido {pedido} ===")
     if not os.path.exists(os.path.join(BASE_DIR, "videos")): 
         os.makedirs(os.path.join(BASE_DIR, "videos"))
     
-    local_app_data = os.getenv("LOCALAPPDATA", os.path.expanduser("~\\AppData\\Local"))
+    if os.name == 'nt':  # Windows
+        local_app_data = os.getenv("LOCALAPPDATA", os.path.expanduser("~\\AppData\\Local"))
+    else:  # Mac / Linux
+        local_app_data = os.path.expanduser("~/Library/Application Support")
     user_data_dir = os.path.join(local_app_data, "Automacao_NFe_Transporte", "sessao_robo")
     if not os.path.exists(user_data_dir): 
         os.makedirs(user_data_dir, exist_ok=True)

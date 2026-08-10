@@ -1,88 +1,140 @@
-# Automação NF-e Transporte (Automacao_NFe_Transporte)
+# 📦 Sistema de Automação de NFe — Documentação Completa
 
-O projeto **Automacao_NFe_Transporte** é um sistema de automação RPA (Robotic Process Automation) construído em Python. Seu objetivo principal é ler pedidos pendentes em planilhas online e emitir automaticamente as respectivas Notas Fiscais Eletrônicas (NF-e) e boletos em um sistema ERP.
+> Sistema de geração automática de Notas Fiscais Eletrônicas integrado ao ERP ADMSIS, Google Sheets e Discord.
 
-## 🎯 Objetivo Principal
-Cruzar dados de planilhas de controle financeiro/logístico no Google Sheets com o sistema ERP da empresa (ADMSIS). O robô identifica quais pedidos ainda não foram faturados e executa os cliques e digitações no sistema web do ERP para gerar as notas fiscais e os boletos de forma automática.
+---
 
-## ⚙️ Componentes e Funcionamento
+## 📋 Índice
 
-### 1. Script Principal (`gerar_nfe_automatica.py`)
-* **Leitura de Planilhas Google:** Ele se conecta a duas planilhas ("Planilha Principal" e "Planilha Transporte"). Usando lógicas de data, ele descobre qual é a aba alvo (ex: pelo dia atual ou pelo mês) e baixa os dados.
-* **Triagem:** Lê as linhas da planilha para encontrar a coluna de "Pedidos" e a coluna de "Nota Fiscal". Se um pedido existir mas a coluna da nota fiscal estiver vazia (ou sem um número válido), ele adiciona este pedido a uma fila de pendências.
-* **Automação de Navegador (Playwright):** Após listar os pendentes, o robô abre uma janela visível do navegador (Chromium):
-   * Realiza login no ERP ADMSIS automaticamente (usando credenciais salvas em `.env`).
-   * Acessa a tela de faturamento.
-   * Para cada pedido pendente: pesquisa o número, abre os detalhes e clica nos botões **"Gerar NFE"** e **"Sim"** (para confirmar). Se for autorizado com sucesso, ele tenta também clicar no botão de gerar o **"Boleto"**.
-* **Sessão e Auditoria:** Salva os cookies e sessão do navegador localmente na pasta `sessao_robo` (para evitar alertas de segurança do Google) e grava todas as interações da tela na pasta `videos/` para posterior auditoria de erros.
+| Documento | Conteúdo |
+|-----------|----------|
+| [Visão Geral](#-visão-geral) | O que é, quem usa, o que faz |
+| [Arquitetura](#-arquitetura) | Tecnologias e fluxo de dados |
+| [Instalação e Execução](docs/instalacao.md) | Como configurar e rodar |
+| [Variáveis de Ambiente](docs/configuracao.md) | O que colocar no `.env` |
+| [Segurança](docs/seguranca.md) | Credenciais, acesso e proteção |
+| [Integrações Externas](docs/integracoes.md) | ERP, Google, Discord |
+| [Cron e Agendamentos](docs/cron.md) | Execuções automáticas |
+| [Operação e Manutenção](docs/operacao.md) | Como monitorar e resolver problemas |
+| [Regras de Negócio](docs/regras-de-negocio.md) | Lógica de decisão do sistema |
 
-### 2. Script Utilitário (`search_orders.py`)
-* É um script auxiliar que utiliza a biblioteca `pandas` para baixar a planilha inteira e procurar em todas as abas por números de pedidos específicos. Muito útil para tirar dúvidas rápidas sobre onde um pedido "foi parar" na planilha.
+---
 
-### 3. Arquivos de Configuração
-* **`.env`**: Guarda as variáveis sensíveis do projeto (usuário e senha do ERP e do Google, além dos IDs das planilhas). Deve ser criado localmente.
-* **`EXECUTAR_NFE.bat`**: Um atalho executável criado para facilitar a execução do robô principal com apenas dois cliques no Windows, sem precisar abrir manualmente o terminal.
+## 🎯 Visão Geral
 
-## 🛠 Tecnologias e Bibliotecas Utilizadas
-* **Python**: Linguagem base do projeto.
-* **Playwright (`async_playwright`)**: Biblioteca de automação web utilizada para simular a navegação de um usuário humano no navegador de forma assíncrona.
-* **Pandas / CSV**: Para a extração, leitura e manipulação das planilhas de dados.
-* **Asyncio**: Para gerenciamento da execução assíncrona do fluxo.
+### Nome do Sistema
+**Automação NFe Nevine** — Sistema RPA (Robotic Process Automation) de emissão de Notas Fiscais.
 
-## 🕐 Agendamento (cron — Mac)
+### Objetivo Principal
+Eliminar o trabalho manual de entrar no ERP ADMSIS, pesquisar cada pedido e clicar em "Gerar NFE". O sistema faz isso automaticamente, todos os dias, varrendo as planilhas de pedidos e acionando o ERP para cada um que ainda não tem nota fiscal emitida.
 
-O script é executado automaticamente via **crontab** no Mac, sem necessidade de intervenção manual.
+### Problema que Resolve
+A equipe financeira precisava abrir o ERP manualmente várias vezes ao dia, buscar pedido por pedido e emitir a nota. Com dezenas de pedidos diários vindos de múltiplas planilhas, o processo consumia horas de trabalho humano e estava sujeito a erros e esquecimentos.
 
-### Entrada no crontab
+### Quem Utiliza
+- **Equipe Financeira/Administrativa** — solicita geração avulsa de notas pelo Discord
+- **Sistema Automatizado (Cron)** — roda sozinho a cada hora, de segunda a sexta
+
+### Principais Funcionalidades
+- ✅ Varredura automática de 3 planilhas do Google Sheets (Principal, Transporte e Valdex)
+- ✅ Identificação de pedidos **sem nota fiscal** ainda pendentes
+- ✅ Acesso automatizado ao ERP ADMSIS via Playwright (robô de navegador)
+- ✅ Emissão da NFe e geração do Boleto em sequência
+- ✅ Bot Discord **SofIA** para solicitação avulsa (`@SofIA crie a NF 9999`)
+- ✅ Sistema de fila no Discord (vários pedidos simultâneos processados em ordem)
+- ✅ Alertas de erro via webhook do Discord
+- ✅ Rejeição automática (tenta até 5 vezes antes de desistir)
+- ✅ Persistência de sessão do navegador (reutiliza login entre execuções)
+
+### O que o Sistema NÃO Faz
+- ❌ Não emite boletos para notas já faturadas
+- ❌ Não resolve rejeições da SEFAZ (esses precisam de correção manual)
+- ❌ Não gerencia o cadastro de clientes/produtos no ERP
+- ❌ Não tem interface web ou painel de controle
+
+### Repositório no GitHub
+> 🔗 Consulte a equipe responsável para obter o link do repositório privado.
+
+---
+
+## 🏗️ Arquitetura
+
+### Tecnologias Utilizadas
+
+| Camada | Tecnologia | Versão |
+|--------|-----------|--------|
+| Linguagem | Python | 3.x |
+| Automação do Browser | Playwright (Chromium) | 1.42.0 |
+| Bot Discord | discord.py | 2.3.2 |
+| Leitura de Planilhas | pandas (xlsx) | 2.2.1 |
+| Segredos | python-dotenv | 1.0.1 |
+| Agendamento | macOS Crontab | nativo |
+
+### Não há:
+- Banco de dados relacional
+- Back-end web (Flask, FastAPI, etc.)
+- Vercel / Heroku / deploy em nuvem
+- Front-end
+
+O sistema roda **inteiramente na máquina local (Mac)** da Nevine.
+
+### Fluxo Geral dos Dados
 
 ```
-50 7-17 * * 1-5   cd /Users/nevine/Documents/nfe && /usr/bin/python3 gerar_nfe_automatica.py >> /Users/nevine/Documents/nfe/nfe_cron.log 2>&1
+MODO AUTOMÁTICO (Cron a cada hora):
+  Crontab (Mac)
+      │
+      └─► gerar_nfe_automatica.py
+              │
+              ├─► Google Sheets ─── lê os pedidos sem NFe das 3 planilhas
+              │
+              └─► Playwright (Chromium headless)
+                      │
+                      ├─► Login no ERP ADMSIS (erp.admsis.com)
+                      ├─► Pesquisa o pedido
+                      ├─► Clica em "Gerar NFe" → confirma
+                      └─► Clica em "Gerar Boleto"
+                              │
+                              └─► Discord Webhook (avisa se houver erro)
+
+MODO AVULSO (Bot Discord):
+  Usuário no Discord
+      │  (@SofIA crie a NF 9999)
+      ▼
+  discord_bot.py (SofIA#7305)
+      │
+      ├─► Coloca o pedido na Fila (asyncio.Queue)
+      │
+      └─► Worker da Fila
+              │
+              └─► processar_pedido_avulso()
+                      │
+                      └─► (mesmo fluxo ERP acima)
+                              │
+                              └─► Responde no Discord ✅ ou ❌
 ```
 
-| Campo | Valor | Significado |
-|---|---|---|
-| Minuto | `50` | Aos 50 minutos de cada hora |
-| Hora | `7–17` | Das 7h às 17h |
-| Dia do mês | `*` | Todo dia |
-| Mês | `*` | Todo mês |
-| Dia da semana | `1–5` | Segunda a Sexta |
-
-**Frequência:** o robô roda **11 vezes por dia útil** — às 07:50, 08:50, 09:50, 10:50, 11:50, 12:50, 13:50, 14:50, 15:50, 16:50 e 17:50.
-
-### Lógica interna de data (qual aba processar)
-
-O script decide automaticamente qual aba da planilha verificar com base no horário da execução:
-
-| Horário da execução | Aba processada |
-|---|---|
-| Antes das 08:50 | **Dia atual** (pedidos de hoje) |
-| A partir das 08:50 | **Dia seguinte** (pedidos de amanhã) |
-
-Isso garante que a última emissão noturna do dia anterior e a primeira do dia seguinte não se sobreponham.
-
-### Log de execução
-
-Todas as saídas do script são salvas em:
+### Arquivos do Projeto
 
 ```
-/Users/nevine/Documents/nfe/nfe_cron.log
+nfe/
+├── .env                        # 🔐 Credenciais (NUNCA compartilhar)
+├── .gitignore                  # Regras do Git
+├── README.md                   # Este arquivo
+├── discord_bot.py              # Bot Discord SofIA
+├── gerar_nfe_automatica.py     # Motor principal da automação
+├── search_orders.py            # Script utilitário de pesquisa
+├── requirements.txt            # Dependências Python
+├── nfe.code-workspace          # Config do VSCode
+├── logs/
+│   └── nfe_cron.log            # Histórico completo de execuções
+├── docs/                       # Documentação detalhada
+│   ├── instalacao.md
+│   ├── configuracao.md
+│   ├── seguranca.md
+│   ├── integracoes.md
+│   ├── cron.md
+│   ├── operacao.md
+│   └── regras-de-negocio.md
+└── videos/                     # Gravações do robô (geradas pelo Playwright)
 ```
-
-## 🤖 Bot do Discord (Sob Demanda)
-
-O projeto também conta com um bot do Discord para permitir a geração de Notas Fiscais avulsas (para pedidos específicos) a qualquer momento.
-
-Para configurá-lo e executá-lo:
-1. Certifique-se de ter preenchido a chave `DISCORD_BOT_TOKEN=` no seu arquivo `.env`.
-2. O bot precisa ficar em execução contínua. Inicie o processo com:
-   `python3 discord_bot.py`
-3. No servidor do Discord onde o bot foi adicionado, envie uma mensagem no chat com o comando:
-   `faça a nota 2020/2026` (onde 2020 é o número do pedido).
-O bot responderá confirmando o início e, em seguida, retornará o status (sucesso ou falha) da geração da NFe.
-
-## 🚀 Como Executar
-1. Certifique-se de que o Python e as bibliotecas do `requirements.txt` estão instaladas (ex: `pip install playwright pandas`).
-2. Instale os navegadores do Playwright usando `playwright install chromium`.
-3. Verifique se o arquivo `.env` está preenchido corretamente com suas credenciais.
-4. Execute rodando o arquivo `EXECUTAR_NFE.bat` ou pelo terminal executando `python gerar_nfe_automatica.py`.
-

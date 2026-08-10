@@ -1,8 +1,18 @@
 import urllib.request
 import pandas as pd
+import os
+from dotenv import load_dotenv
 
-url = "https://docs.google.com/spreadsheets/d/1pVnhOWvuGKn66CmXNhEZNTPpsiQMcBUpyrYtHMcmp-g/export?format=xlsx"
-urllib.request.urlretrieve(url, "planilha.xlsx")
+load_dotenv()
+
+# Carregar da variável de ambiente, ou usar fallback
+spread_id = os.getenv("SPREADSHEET_ID_2", "1pVnhOWvuGKn66CmXNhEZNTPpsiQMcBUpyrYtHMcmp-g")
+url = f"https://docs.google.com/spreadsheets/d/{spread_id}/export?format=xlsx"
+
+req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
+with urllib.request.urlopen(req) as response:
+    with open("planilha.xlsx", "wb") as f:
+        f.write(response.read())
 
 xls = pd.ExcelFile("planilha.xlsx")
 pedidos_alvo = []
