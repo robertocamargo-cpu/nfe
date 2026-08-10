@@ -5,7 +5,7 @@ import discord
 from dotenv import load_dotenv
 
 # Importa a lógica do script existente
-from gerar_nfe_automatica import processar_pedido_avulso, extrair_pedido
+from gerar_nfe_automatica import processar_pedido_avulso
 
 # Carrega variáveis de ambiente do .env
 load_dotenv()
@@ -16,26 +16,76 @@ if not TOKEN:
     print("ERRO: Token do bot não encontrado. Adicione DISCORD_BOT_TOKEN no arquivo .env")
     exit(1)
 
+
+def env_int(nome_variavel):
+    valor = os.getenv(nome_variavel, "").strip()
+    if not valor:
+        return None
+    try:
+        return int(valor)
+    except ValueError:
+        print(f"AVISO: {nome_variavel} deve conter apenas o ID numerico do canal. Valor ignorado.")
+        return None
+
+
+def env_int_set(nome_variavel):
+    valores = set()
+    for parte in os.getenv(nome_variavel, "").replace(";", ",").split(","):
+        parte = parte.strip()
+        if not parte:
+            continue
+        try:
+            valores.add(int(parte))
+        except ValueError:
+            print(f"AVISO: {nome_variavel} contem um ID invalido e foi ignorado: {parte}")
+    return valores
+
+
+# ─── Configuração de Canais ────────────────────────────────────────────────────
+# Cada canal tem uma finalidade exclusiva. A SofIA só executa o comando correto
+# no canal correto. Em canais desconhecidos, ela ignora silenciosamente.
+#
+# Este repositório só executa NFe. Outros objetivos, como GNRE, devem viver
+# no projeto correspondente e usar seus próprios canais/configurações.
+CANAL_NFE_ID = env_int("DISCORD_NFE_CHANNEL_ID") or env_int("DISCORD_CHANNEL_ID")
+USUARIOS_AUTORIZADOS = env_int_set("DISCORD_NFE_ALLOWED_USER_IDS")
+CARGOS_AUTORIZADOS = env_int_set("DISCORD_NFE_ALLOWED_ROLE_IDS")
+
+CANAIS_PERMITIDOS = {
+    CANAL_NFE_ID: {
+        "finalidade": "nfe",
+        "descricao": "Canal de Notas Fiscais Eletrônicas"
+    },
+} if CANAL_NFE_ID else {}
+
+
+def usuario_autorizado(message):
+    if not USUARIOS_AUTORIZADOS and not CARGOS_AUTORIZADOS:
+        return True
+    if message.author.id in USUARIOS_AUTORIZADOS:
+        return True
+    cargos_usuario = {role.id for role in getattr(message.author, "roles", [])}
+    return bool(cargos_usuario & CARGOS_AUTORIZADOS)
+
 # Configura as intenções necessárias (Message Content Intent)
 intents = discord.Intents.default()
 intents.message_content = True
 
 client = discord.Client(intents=intents)
 
-# Variável global para a fila de pedidos
-pedido_queue = asyncio.Queue()
+# Fila de pedidos NFe (criada dentro do event loop do discord no on_ready)
+pedido_queue = None
+worker_task = None
 processando_agora = None
 
 async def worker_fila():
     global processando_agora
     await client.wait_until_ready()
     while not client.is_closed():
-        # Pega o próximo item da fila
         item = await pedido_queue.get()
         pedido_extraido = item['pedido']
-        msg_original = item['msg_original']
         msg_status = item['msg_status']
-        
+
         processando_agora = pedido_extraido
         try:
             resultado = await processar_pedido_avulso(pedido_extraido)
@@ -55,9 +105,15 @@ async def worker_fila():
 
 @client.event
 async def on_ready():
+    global pedido_queue, worker_task
+    if pedido_queue is None:
+        # Criar a Queue AQUI garante que ela pertença ao mesmo event loop do discord.py
+        pedido_queue = asyncio.Queue()
+    if worker_task is None or worker_task.done():
+        worker_task = asyncio.create_task(worker_fila())
     print(f'Bot {client.user} conectado com sucesso e pronto para ouvir comandos!')
-    # Inicia o worker que vai ler a fila
-    client.loop.create_task(worker_fila())
+    if not CANAIS_PERMITIDOS:
+        print("AVISO: Nenhum canal configurado. Defina DISCORD_NFE_CHANNEL_ID no .env para aceitar pedidos de NFe.")
 
 @client.event
 async def on_message(message):
@@ -67,56 +123,81 @@ async def on_message(message):
     if message.author == client.user:
         return
 
-    print(f"[DEBUG] Msg de {message.author}: {message.content} | Menções: {[m.name for m in message.mentions]}")
-
-    # Só processa se o bot for explicitamente mencionado (marcado com @SofIA)
+    # Só processa se o bot for explicitamente mencionado (@SofIA)
     if client.user not in message.mentions:
-        print(f"[DEBUG] Ignorado: Bot não foi mencionado na mensagem.")
         return
 
-    # Usa clean_content para converter IDs de menções (<@123...>) em nomes textuais (@SofIA)
+    canal_id = message.channel.id
+    canal_config = CANAIS_PERMITIDOS.get(canal_id)
+
+    # Usa clean_content para evitar que IDs de menção virem números de pedido
     texto_msg = message.clean_content.lower().strip()
 
-    # Comando para parar/cancelar a automação
-    if "parar" in texto_msg or "cancelar" in texto_msg or "stop" in texto_msg:
-        # Nota: Parar uma queue e matar o processo rodando no asyncio.create_task externo é complexo no asyncio nativo sem referenciar a task atual do worker.
-        # Por simplicidade de segurança, cancelamos tudo saindo do script se pedirem para parar agressivamente.
-        # Mas para o dia-a-dia, avisamos que está cancelando:
-        await message.reply("🛑 **Comando de parada recebido!** Reiniciando bot de emergência...")
-        os._exit(1) # Força a saída. Como geralmente roda num serviço ou podemos relogar, é a forma mais segura de abortar o Playwright limpo.
+    print(f"[DEBUG] Mencao recebida de {message.author} no canal {canal_id}.")
+
+    # ─── Canal não mapeado: ignora silenciosamente ───────────────────────────
+    if canal_config is None:
+        print(f"[DEBUG] Canal {canal_id} não configurado. Ignorando.")
         return
 
-    import datetime
+    if not usuario_autorizado(message):
+        await message.reply("⚠️ Você não tem permissão para acionar a automação de NFe neste canal.")
+        print(f"[SEGURANCA] Usuario sem permissao tentou acionar NFe: {message.author} ({message.author.id})")
+        return
 
-    # Verifica se a mensagem é um comando para gerar nota usando uma expressão regular para capturar variações
-    # Ex: crie a nf, gere nf, faça a nota, gerar nfe, emitir nf, etc.
-    if re.search(r"(crie|gere|faça|faca|gerar|emitir).*(nf|nfe|nota)", texto_msg):
-        
-        # Extrai o número do pedido e opcionalmente o ano (ex: 9999 ou 9999/2026)
-        match_pedido = re.search(r"(\d+)(?:/(\d{2,4}))?", texto_msg)
-        
-        if not match_pedido:
-            await message.reply("Não consegui identificar o número do pedido na sua mensagem. Exemplo válido: `crie a nf 9999`")
+    finalidade = canal_config["finalidade"]
+
+    # ─── Canal NFe ──────────────────────────────────────────────────────────────
+    if finalidade == "nfe":
+
+        # Comando de parada fica restrito ao canal/finalidade NFe e usuarios autorizados.
+        if "parar" in texto_msg or "cancelar" in texto_msg or "stop" in texto_msg:
+            await message.reply("🛑 **Comando de parada recebido!** Reiniciando bot de emergência...")
+            os._exit(1)
             return
 
-        numero = match_pedido.group(1)
-        ano = match_pedido.group(2)
-        pedido_extraido = str(numero)
+        # Se o usuário tentar pedir GNRE ou outro serviço no canal de NFe
+        if re.search(r"\bgnre\b", texto_msg):
+            await message.reply(
+                "⚠️ Este canal é exclusivo para **Notas Fiscais Eletrônicas**.\n"
+                "Para solicitações de GNRE, utilize o canal correto."
+            )
+            return
 
-        print(f"[Discord Bot] Pedido {pedido_extraido} solicitado por {message.author}.")
-        
-        # Avaliar fila
-        tamanho_fila = pedido_queue.qsize()
-        if processando_agora:
-            posicao = tamanho_fila + 1
-            msg_status = await message.reply(f"⏳ O pedido **{pedido_extraido}** entrou na fila (Posição {posicao}). Atualmente processando o {processando_agora}...")
-        else:
-            msg_status = await message.reply(f"⏳ Iniciando a automação para o pedido **{pedido_extraido}**. Por favor, aguarde...")
-            
-        await pedido_queue.put({
-            'pedido': pedido_extraido,
-            'msg_original': message,
-            'msg_status': msg_status
-        })
+        # Comando para gerar NFe
+        if re.search(r"(crie|gere|faça|faca|gerar|emitir).*(nf|nfe|nota)", texto_msg):
+            match_pedido = re.search(r"(\d+)(?:/(\d{2,4}))?", texto_msg)
+
+            if not match_pedido:
+                await message.reply("Não consegui identificar o número do pedido. Exemplo válido: `@SofIA crie a nf 9999`")
+                return
+
+            pedido_extraido = str(match_pedido.group(1))
+
+            print(f"[Discord Bot] NFe - Pedido {pedido_extraido} solicitado por {message.author}.")
+
+            # Informar posição na fila ou início imediato
+            if processando_agora:
+                posicao = pedido_queue.qsize() + 1
+                msg_status = await message.reply(
+                    f"⏳ O pedido **{pedido_extraido}** entrou na fila (Posição {posicao}). "
+                    f"Atualmente processando o pedido **{processando_agora}**..."
+                )
+            else:
+                msg_status = await message.reply(
+                    f"⏳ Iniciando a automação para o pedido **{pedido_extraido}**. Por favor, aguarde..."
+                )
+
+            await pedido_queue.put({
+                'pedido': pedido_extraido,
+                'msg_status': msg_status
+            })
+            return
+
+        # Mensagem mencionou a SofIA mas não é um comando reconhecido neste canal
+        await message.reply(
+            "Olá! 👋 Neste canal posso **emitir Notas Fiscais**.\n"
+            "Use: `@SofIA crie a nf 9999` para gerar uma NF."
+        )
 
 client.run(TOKEN)

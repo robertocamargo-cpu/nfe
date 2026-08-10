@@ -9,18 +9,21 @@ import os
 import datetime
 import json
 import urllib.request
+import urllib.error
 from playwright.async_api import async_playwright
 
 # Pegar o diretorio onde o script esta localizado
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+LOG_PATH = os.path.join(BASE_DIR, "logs", "nfe_cron.log")
+
+log_handlers = [logging.FileHandler(LOG_PATH)]
+if sys.stdout.isatty():
+    log_handlers.append(logging.StreamHandler(sys.stdout))
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.FileHandler(os.path.join(BASE_DIR, "logs", "nfe_cron.log")),
-        logging.StreamHandler(sys.stdout)
-    ]
+    handlers=log_handlers,
 )
 
 # Tentar carregar variaveis do arquivo .env se ele existir
@@ -57,17 +60,64 @@ ERP_URL = "https://erp.admsis.com/Home"
 USUARIO = os.getenv("ERP_USER")
 SENHA   = os.getenv("ERP_PASS")
 
-if not USUARIO or not SENHA:
-    logging.info("ERRO FATAL: Credenciais do ERP não encontradas no .env!")
-    sys.exit(1)
-
 GOOGLE_USER = os.getenv("GOOGLE_USER", "")
 GOOGLE_PASS = os.getenv("GOOGLE_PASS", "")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
 DISCORD_BOT_TOKEN   = os.getenv("DISCORD_BOT_TOKEN", "")
-DISCORD_CHANNEL_ID  = os.getenv("DISCORD_CHANNEL_ID", "")
+DISCORD_NFE_REPORT_CHANNEL_ID  = (
+    os.getenv("DISCORD_NFE_REPORT_CHANNEL_ID")
+    or os.getenv("DISCORD_NFE_CHANNEL_ID")
+    or os.getenv("DISCORD_CHANNEL_ID", "")
+)
 
 MAX_TENTATIVAS_GERACAO = 5
+
+
+def env_bool(nome_variavel, padrao=False):
+    valor = os.getenv(nome_variavel)
+    if valor is None:
+        return padrao
+    return valor.strip().lower() in ("1", "true", "sim", "yes", "on")
+
+
+def env_int(nome_variavel, padrao=0):
+    valor = os.getenv(nome_variavel)
+    if valor is None or not valor.strip():
+        return padrao
+    try:
+        return int(valor)
+    except ValueError:
+        logging.info(f"[AVISO] {nome_variavel} invalido: use apenas numeros. Usando {padrao}.")
+        return padrao
+
+
+def validar_credenciais_erp():
+    if USUARIO and SENHA:
+        return True
+    logging.info("ERRO FATAL: Credenciais do ERP nao encontradas no .env!")
+    return False
+
+
+def get_user_data_dir():
+    if os.name == 'nt':  # Windows
+        local_app_data = os.getenv("LOCALAPPDATA", os.path.expanduser("~\\AppData\\Local"))
+    else:  # Mac / Linux
+        local_app_data = os.path.expanduser("~/Library/Application Support")
+    user_data_dir = os.path.join(local_app_data, "Automacao_NFe_Transporte", "sessao_robo")
+    os.makedirs(user_data_dir, exist_ok=True)
+    return user_data_dir
+
+
+def get_browser_options():
+    options = {
+        "headless": env_bool("NFE_HEADLESS", False),
+        "slow_mo": env_int("NFE_SLOW_MO_MS", 0),
+        "viewport": {"width": 1366, "height": 768},
+    }
+    if env_bool("NFE_RECORD_VIDEO", False):
+        os.makedirs(os.path.join(BASE_DIR, "videos"), exist_ok=True)
+        options["record_video_dir"] = os.path.join(BASE_DIR, "videos/")
+    return options
 
 
 def texto_curto(texto, limite=900):
@@ -123,16 +173,38 @@ def _enviar_mensagem_discord_sync(mensagem: str):
     """Envia mensagem como a SofIA (bot) via API. Fallback para webhook se não houver bot configurado."""
     texto = texto_curto(mensagem, 1900)
     payload = json.dumps({"content": texto}).encode("utf-8")
+    erro_bot = None
 
     # Preferir API do Bot (mensagem aparece como SofIA)
-    if DISCORD_BOT_TOKEN and DISCORD_CHANNEL_ID:
-        url = f"https://discord.com/api/v10/channels/{DISCORD_CHANNEL_ID}/messages"
+    if DISCORD_BOT_TOKEN and DISCORD_NFE_REPORT_CHANNEL_ID:
+        url = f"https://discord.com/api/v10/channels/{DISCORD_NFE_REPORT_CHANNEL_ID}/messages"
         req = urllib.request.Request(
             url,
             data=payload,
             headers={
                 "Content-Type": "application/json",
                 "Authorization": f"Bot {DISCORD_BOT_TOKEN}",
+                "User-Agent": "SofIA-NFe-Bot/1.0",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                resp.read()
+            return
+        except urllib.error.HTTPError as e:
+            erro_bot = f"Discord Bot API retornou HTTP {e.code}"
+        except Exception as e:
+            erro_bot = f"Discord Bot API falhou: {e}"
+
+    # Fallback: webhook generico
+    if DISCORD_WEBHOOK_URL:
+        req = urllib.request.Request(
+            DISCORD_WEBHOOK_URL,
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "SofIA-NFe-Bot/1.0",
             },
             method="POST",
         )
@@ -140,25 +212,16 @@ def _enviar_mensagem_discord_sync(mensagem: str):
             resp.read()
         return
 
-    # Fallback: webhook genérico
-    if DISCORD_WEBHOOK_URL:
-        req = urllib.request.Request(
-            DISCORD_WEBHOOK_URL,
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            resp.read()
-        return
+    if erro_bot:
+        raise RuntimeError(f"{erro_bot}. Configure permissoes do bot no canal ou defina DISCORD_WEBHOOK_URL.")
 
-    raise RuntimeError("Nenhum meio de envio Discord configurado (DISCORD_BOT_TOKEN+DISCORD_CHANNEL_ID ou DISCORD_WEBHOOK_URL).")
+    raise RuntimeError("Nenhum meio de envio Discord configurado (DISCORD_BOT_TOKEN+DISCORD_NFE_CHANNEL_ID ou DISCORD_WEBHOOK_URL).")
 
 
 async def avisar_discord(mensagem):
     """Envia aviso pontual de erro/alerta como a SofIA."""
     if not DISCORD_BOT_TOKEN and not DISCORD_WEBHOOK_URL:
-        logging.info("      [AVISO] Discord nao configurado. Defina DISCORD_BOT_TOKEN+DISCORD_CHANNEL_ID no .env.")
+        logging.info("      [AVISO] Discord nao configurado. Defina DISCORD_BOT_TOKEN+DISCORD_NFE_CHANNEL_ID no .env.")
         return
     try:
         await asyncio.to_thread(_enviar_mensagem_discord_sync, mensagem)
@@ -659,6 +722,9 @@ async def gerar_nfe_com_tentativas(context, erp_page, item):
     return erp_page, ultimo_resultado
 
 async def main():
+    if not validar_credenciais_erp():
+        return
+
     aba_param = sys.argv[1] if len(sys.argv) > 1 else ABA_ALVO
     logging.info("=== Automacao NFe Independente ===")
 
@@ -686,26 +752,13 @@ async def main():
         }
     ]
 
-    if not os.path.exists(os.path.join(BASE_DIR, "videos")): 
-        os.makedirs(os.path.join(BASE_DIR, "videos"))
-    
-    # Detectar o sistema operacional para definir o caminho da sessao corretamente
-    if os.name == 'nt':  # Windows
-        local_app_data = os.getenv("LOCALAPPDATA", os.path.expanduser("~\\AppData\\Local"))
-    else:  # Mac / Linux
-        local_app_data = os.path.expanduser("~/Library/Application Support")
-    user_data_dir = os.path.join(local_app_data, "Automacao_NFe_Transporte", "sessao_robo")
-    if not os.path.exists(user_data_dir): 
-        os.makedirs(user_data_dir, exist_ok=True)
+    user_data_dir = get_user_data_dir()
     logging.info(f"      Sessao do robo em: {user_data_dir}")
 
     async with async_playwright() as p:
         context = await p.chromium.launch_persistent_context(
             user_data_dir,
-            headless=False,
-            slow_mo=200, # Um pouco mais rapido
-            viewport={"width": 1366, "height": 768},
-            record_video_dir=os.path.join(BASE_DIR, "videos/")
+            **get_browser_options()
         )
         
         # Reutilizar a primeira pagina se ja existir
@@ -726,10 +779,11 @@ async def main():
             if linhas is None: 
                 continue
 
-            # Mostrar as primeiras linhas para depurar cabecalho
-            logging.info("\n  Depuracao de cabecalho (primeiras 3 linhas do CSV):")
-            for l in linhas[:3]:
-                logging.info(f"    L{l['linha']}: {l['cells']}")
+            debug_csv = env_bool("NFE_DEBUG_CSV", False)
+            if debug_csv:
+                logging.info("\n  Depuracao de cabecalho (primeiras 3 linhas do CSV):")
+                for l in linhas[:3]:
+                    logging.info(f"    L{l['linha']}: {l['cells']}")
 
             # Detectar indices de forma mais robusta (L2 e o cabecalho)
             idx_c, idx_h = 2, 7 # Padrao encontrado no debug
@@ -748,6 +802,7 @@ async def main():
                 idx_h = p_conf['force_idx_h']
 
             logging.info(f"\n  Iniciando analise de {len(linhas)} linhas...")
+            pendentes_planilha = 0
             for row in linhas:
                 if row["linha"] <= 2: continue # Pular cabecalho
                 
@@ -762,13 +817,16 @@ async def main():
                 
                 if pedido:
                     tem_nfe = numero_antes_da_barra(val_h)
-                    # DEBUG de cada linha para o usuario ver
-                    status_txt = "[NFe OK]" if tem_nfe else "[PENDENTE]"
-                    logging.info(f"    L{row['linha']} | Pedido: {pedido} | NFe: '{val_h}' -> {status_txt}")
+                    if debug_csv:
+                        status_txt = "[NFe OK]" if tem_nfe else "[PENDENTE]"
+                        logging.info(f"    L{row['linha']} | Pedido: {pedido} | NFe: '{val_h}' -> {status_txt}")
 
                     if not tem_nfe:
+                        pendentes_planilha += 1
                         logging.info(f"      [!] Adicionado a fila: {pedido}")
                         todos_pendentes.append({"pedido": pedido, "planilha": p_conf['nome']})
+
+            logging.info(f"  Pendentes encontrados em {p_conf['nome']}: {pendentes_planilha}")
         
         if not todos_pendentes:
             logging.info("\n  [OK] Nada pendente em nenhuma planilha!")
@@ -804,25 +862,16 @@ async def main():
         await context.close()
 
 async def processar_pedido_avulso(pedido: str) -> str:
+    if not validar_credenciais_erp():
+        return "FALHA: Credenciais do ERP nao encontradas no .env."
+
     logging.info(f"=== Automacao NFe Avulsa: Pedido {pedido} ===")
-    if not os.path.exists(os.path.join(BASE_DIR, "videos")): 
-        os.makedirs(os.path.join(BASE_DIR, "videos"))
-    
-    if os.name == 'nt':  # Windows
-        local_app_data = os.getenv("LOCALAPPDATA", os.path.expanduser("~\\AppData\\Local"))
-    else:  # Mac / Linux
-        local_app_data = os.path.expanduser("~/Library/Application Support")
-    user_data_dir = os.path.join(local_app_data, "Automacao_NFe_Transporte", "sessao_robo")
-    if not os.path.exists(user_data_dir): 
-        os.makedirs(user_data_dir, exist_ok=True)
+    user_data_dir = get_user_data_dir()
 
     async with async_playwright() as p:
         context = await p.chromium.launch_persistent_context(
             user_data_dir,
-            headless=False,
-            slow_mo=200,
-            viewport={"width": 1366, "height": 768},
-            record_video_dir=os.path.join(BASE_DIR, "videos/")
+            **get_browser_options()
         )
         
         try:

@@ -24,7 +24,9 @@ Este sistema roda **localmente** em um Mac (sem exposição à internet). Não h
 ### Discord (Bot SofIA)
 - O bot autentica via `DISCORD_BOT_TOKEN` no arquivo `.env`.
 - Tokens do Discord expiram se o bot for reiniciado da plataforma ou se o token for revogado manualmente.
-- Não há verificação de senha para usar o bot — o controle de acesso é feito pelo **canal** (quem está no canal pode usar o bot).
+- O primeiro controle de acesso é o **canal NFe** (`DISCORD_NFE_CHANNEL_ID`).
+- Opcionalmente, o bot também restringe por usuários (`DISCORD_NFE_ALLOWED_USER_IDS`) ou cargos (`DISCORD_NFE_ALLOWED_ROLE_IDS`).
+- Canais de outros projetos, como GNRE, devem ter automações próprias e não devem chamar a automação deste repositório.
 
 ---
 
@@ -32,11 +34,11 @@ Este sistema roda **localmente** em um Mac (sem exposição à internet). Não h
 
 | Quem | O que pode fazer |
 |------|-----------------|
-| Usuários no canal Discord | Solicitar geração de NFe avulsa (`@SofIA crie a NF XXXX`) |
-| Usuários no canal Discord | Parar o robô de emergência (`@SofIA parar`) |
+| Usuários autorizados no canal NFe | Solicitar geração de NFe avulsa (`@SofIA crie a NF XXXX`) |
+| Usuários autorizados no canal NFe | Parar o robô de emergência (`@SofIA parar`) |
 | Acesso ao Mac (local) | Tudo — executar scripts, alterar `.env`, reiniciar o cron |
 
-> **Decisão de design:** Como o canal do Discord é privado e restrito apenas à equipe autorizada, não há necessidade de verificação adicional de cargo dentro do bot.
+> **Decisão de design:** O bot ignora silenciosamente canais não configurados. Dentro do canal NFe, a autorização por cargo/usuário é opcional, mas recomendada para produção.
 
 ---
 
@@ -73,7 +75,9 @@ Este sistema roda **localmente** em um Mac (sem exposição à internet). Não h
 - Todas as ações do robô são registradas em `logs/nfe_cron.log` com timestamp
 - Formato: `2026-08-10 12:00:00,000 [INFO] Mensagem`
 - O log nunca registra senhas ou tokens — apenas pedidos, resultados e erros
-- Os vídeos em `videos/` gravam visualmente o que o robô fez (úteis para debug)
+- Por padrão, o bot não registra o texto completo das mensagens recebidas no Discord
+- Por padrão, o cron não registra todas as linhas da planilha; `NFE_DEBUG_CSV=1` ativa esse detalhe para investigação
+- Os vídeos em `videos/` gravam visualmente o que o robô fez e podem conter dados fiscais. Use `NFE_RECORD_VIDEO=1` apenas para debug e remova gravações antigas periodicamente.
 
 ---
 

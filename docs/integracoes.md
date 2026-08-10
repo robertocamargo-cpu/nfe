@@ -89,7 +89,8 @@ O sistema se comunica com 3 serviços externos: ERP ADMSIS, Google Sheets e Disc
 | **Nome** | SofIA#7305 |
 | **Objetivo** | Receber pedidos manuais de NFe + enviar relatórios automáticos do cron |
 | **Autenticação** | Token do bot (`DISCORD_BOT_TOKEN`) |
-| **Canal de relatórios** | Configurado via `DISCORD_CHANNEL_ID` no `.env` |
+| **Canal de comandos NFe** | Configurado via `DISCORD_NFE_CHANNEL_ID` no `.env` |
+| **Canal de relatórios** | Configurado via `DISCORD_NFE_REPORT_CHANNEL_ID` ou, se vazio, `DISCORD_NFE_CHANNEL_ID` |
 | **Biblioteca** | discord.py 2.3.2 |
 | **Intents necessários** | `message_content = True` |
 
@@ -100,6 +101,13 @@ O sistema se comunica com 3 serviços externos: ERP ADMSIS, Google Sheets e Disc
 @SofIA emitir nota 9999
 @SofIA parar          (cancela tudo e reinicia o bot de emergência)
 ```
+
+O bot só aceita esses comandos no canal NFe configurado. Mensagens em canais desconhecidos são ignoradas, e assuntos de outros projetos, como GNRE, devem ser tratados no projeto/canal correspondente.
+
+**Autorização opcional:**
+- `DISCORD_NFE_ALLOWED_USER_IDS` restringe por usuários específicos
+- `DISCORD_NFE_ALLOWED_ROLE_IDS` restringe por cargos do Discord
+- Se ambos ficarem vazios, qualquer usuário com acesso ao canal NFe pode acionar a automação
 
 **Sistema de Fila:**
 - O bot gerencia uma fila interna (`asyncio.Queue`)
@@ -134,9 +142,11 @@ Se não houver nenhum pedido pendente:
 ```
 
 **Prioridade de envio:**
-1. **API do Bot** (mensagem aparece como SofIA) — usa `DISCORD_BOT_TOKEN` + `DISCORD_CHANNEL_ID`
+1. **API do Bot** (mensagem aparece como SofIA) — usa `DISCORD_BOT_TOKEN` + `DISCORD_NFE_REPORT_CHANNEL_ID` ou `DISCORD_NFE_CHANNEL_ID`
 2. **Webhook fallback** — usa `DISCORD_WEBHOOK_URL` (mensagem genérica, sem identidade da SofIA)
 3. Se nenhum estiver configurado, apenas registra no log
+
+As chamadas HTTP para o Discord incluem `User-Agent: SofIA-NFe-Bot/1.0`. Sem esse cabeçalho, a API pode responder `403 Forbidden` mesmo quando o bot e o canal estão configurados corretamente.
 
 ---
 

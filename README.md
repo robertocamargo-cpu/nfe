@@ -40,9 +40,9 @@ A equipe financeira precisava abrir o ERP manualmente várias vezes ao dia, busc
 - ✅ Identificação de pedidos **sem nota fiscal** ainda pendentes
 - ✅ Acesso automatizado ao ERP ADMSIS via Playwright (robô de navegador)
 - ✅ Emissão da NFe e geração do Boleto em sequência
-- ✅ Bot Discord **SofIA** para solicitação avulsa (`@SofIA crie a NF 9999`)
+- ✅ Bot Discord **SofIA** para solicitação avulsa no canal NFe (`@SofIA crie a NF 9999`)
 - ✅ Sistema de fila no Discord (vários pedidos simultâneos processados em ordem)
-- ✅ Alertas de erro via webhook do Discord
+- ✅ Alertas e relatórios via API do bot Discord, com fallback por webhook
 - ✅ Rejeição automática (tenta até 5 vezes antes de desistir)
 - ✅ Persistência de sessão do navegador (reutiliza login entre execuções)
 
@@ -50,6 +50,7 @@ A equipe financeira precisava abrir o ERP manualmente várias vezes ao dia, busc
 - ❌ Não emite boletos para notas já faturadas
 - ❌ Não resolve rejeições da SEFAZ (esses precisam de correção manual)
 - ❌ Não gerencia o cadastro de clientes/produtos no ERP
+- ❌ Não processa GNRE; esse objetivo pertence ao projeto/canal GNRE
 - ❌ Não tem interface web ou painel de controle
 
 ### Repositório no GitHub
@@ -88,18 +89,18 @@ MODO AUTOMÁTICO (Cron a cada hora):
               │
               ├─► Google Sheets ─── lê os pedidos sem NFe das 3 planilhas
               │
-              └─► Playwright (Chromium headless)
+              └─► Playwright (Chromium configurável por .env)
                       │
                       ├─► Login no ERP ADMSIS (erp.admsis.com)
                       ├─► Pesquisa o pedido
                       ├─► Clica em "Gerar NFe" → confirma
                       └─► Clica em "Gerar Boleto"
                               │
-                              └─► Discord Webhook (avisa se houver erro)
+                              └─► Discord Bot/Webhook (relatório e alertas)
 
 MODO AVULSO (Bot Discord):
   Usuário no Discord
-      │  (@SofIA crie a NF 9999)
+      │  (@SofIA crie a NF 9999 no canal NFe)
       ▼
   discord_bot.py (SofIA#7305)
       │

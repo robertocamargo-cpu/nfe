@@ -59,8 +59,6 @@ def numero_antes_da_barra(texto):
 | `1234/2026` | ❌ Não — já foi emitida |
 | `9999` | ❌ Não — já tem número |
 
----
-
 ## 3. Extração do Número do Pedido
 
 O número do pedido nas planilhas pode vir em formatos diferentes:
@@ -141,8 +139,37 @@ O bot responde quando mencionado com `@SofIA` e a mensagem contiver:
 
 ### Comando de parada de emergência
 - `@SofIA parar` → encerra o processo imediatamente (`os._exit(1)`)
+- Só é aceito no canal NFe configurado e por usuários autorizados
 - Útil se o robô travar ou o browser não responder
 - Após o parar, é necessário reiniciar o `discord_bot.py` manualmente
+
+### Canais com finalidades exclusivas
+
+A SofIA está preparada para atuar em múltiplos canais do servidor, cada um com uma responsabilidade diferente. Ela **nunca mistura** as funções entre canais.
+
+Ao receber uma mensagem com `@SofIA`, o bot verifica **em qual canal** a mensagem foi enviada e decide o que fazer:
+
+| Canal | Configuração | Finalidade |
+|-------|--------------|-----------|
+| Canal NFe | `DISCORD_NFE_CHANNEL_ID` | Emissão de Notas Fiscais Eletrônicas |
+| Canal GNRE | configurado no projeto GNRE | Fora do escopo deste repositório |
+
+| Situação | Resposta da SofIA |
+|----------|------------------|
+| `@SofIA crie a nf 9999` no canal NFe | ✅ Processa normalmente |
+| `@SofIA crie a nf 9999` em canal desconhecido | 🔇 Ignora silenciosamente |
+| `@SofIA gnre ...` no canal NFe | ⚠️ Avisa que este canal é só para NFe |
+| `@SofIA parar` no canal NFe | 🛑 Executa parada de emergência |
+| `@SofIA parar` fora do canal NFe | 🔇 Ignora silenciosamente |
+
+Para manter outro projeto, como GNRE, aplique o mesmo conceito no repositório correspondente:
+
+1. Adicione a variável de ambiente no `.env`:
+   ```
+   DISCORD_GNRE_CHANNEL_ID=SEU_ID_AQUI
+   ```
+2. Mantenha a lógica de GNRE no projeto GNRE, sem importar nem acionar o motor de NFe.
+3. Documente comandos, permissões e relatórios separadamente para não misturar objetivos.
 
 ---
 

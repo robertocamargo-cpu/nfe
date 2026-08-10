@@ -2,6 +2,7 @@
 videos/
 sessao_robo/
 __pycache__/
+logs/*.log
 *.csv
 .DS_Store
 *.xlsx
