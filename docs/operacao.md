@@ -36,6 +36,17 @@ grep -i "ERRO\|FALHA\|VERIFICAR" /Users/nevine/Documents/nfe/logs/nfe_cron.log |
 grep "Automacao NFe Independente" /Users/nevine/Documents/nfe/logs/nfe_cron.log | tail -5
 ```
 
+### 4. Verificar se o Boleto Foi Gerado ou Pulado
+
+```bash
+grep "9999" /Users/nevine/Documents/nfe/logs/nfe_cron.log
+# Procure por:
+# OK - NFe autorizada; boleto gerado
+# OK - NFe autorizada; boleto ja consta no ERP
+# PULADO - Boleto ja emitido; nenhuma nova geracao feita
+# VERIFICAR - NFe autorizada, mas boleto nao foi localizado/gerado
+```
+
 ---
 
 ## Erros Conhecidos e Soluções
@@ -48,6 +59,8 @@ grep "Automacao NFe Independente" /Users/nevine/Documents/nfe/logs/nfe_cron.log 
 | `network_io_suspended` | Mac entrou em hibernação durante execução | Desabilitar o modo de suspensão automática nas Preferências |
 | `Rejeicao retornada pelo ERP/SEFAZ` | Problema fiscal no pedido (NCM, CFOP, cadastro) | Requer correção manual no ERP — o robô não pode resolver |
 | `VERIFICAR - Sem confirmacao clara` | NFe possivelmente emitida mas a tela não mostrou confirmação clara | Verificar manualmente no ERP se a NFe foi gerada |
+| `VERIFICAR - NFe autorizada, mas boleto nao foi localizado/gerado` | A NFe foi autorizada, mas o botão de boleto não apareceu ou não foi reconhecido | Gerar o boleto manualmente no ERP e avisar o técnico para mapear o novo botão/tela |
+| `PULADO - Boleto ja emitido; nenhuma nova geracao feita` | O ERP já mostrou sinais de boleto existente | Não gerar novamente; conferir apenas se houver dúvida operacional |
 | Bot do Discord offline | Token expirou ou máquina reiniciou | Reiniciar o `discord_bot.py` e/ou renovar token |
 
 ### Limpar Sessão do Browser (resolver crashes do Playwright)

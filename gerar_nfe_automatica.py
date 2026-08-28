@@ -8,13 +8,17 @@ import io
 import os
 import datetime
 import json
+import time
 import urllib.request
 import urllib.error
 from playwright.async_api import async_playwright
 
+import database
+
 # Pegar o diretorio onde o script esta localizado
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_PATH = os.path.join(BASE_DIR, "logs", "nfe_cron.log")
+LOCKS_DIR = os.path.join(BASE_DIR, "locks")
 
 log_handlers = [logging.FileHandler(LOG_PATH)]
 if sys.stdout.isatty():
@@ -39,11 +43,14 @@ except:
     pass
 
 # ─── Configuracoes ─────────────────────────────────────────────────────────
-SPREADSHEET_ID_1  = os.getenv("SPREADSHEET_ID", "1YAKtpZw-1wbEPG5fTCgg-kQ0NQs3CFgbdof-IU4shEs")
+SPREADSHEET_ID_1  = os.getenv("SPREADSHEET_ID_PRINCIPAL", os.getenv("SPREADSHEET_ID", "1dvIgAH5B3ePkB_4npXRMVcOB6GUBt8JhCFy5D5u-igs"))
 SPREADSHEET_URL_1 = "https://docs.google.com/spreadsheets/d/" + SPREADSHEET_ID_1 + "/edit"
 
-SPREADSHEET_ID_2  = "1pVnhOWvuGKn66CmXNhEZNTPpsiQMcBUpyrYtHMcmp-g"
+SPREADSHEET_ID_2  = os.getenv("SPREADSHEET_ID_TRANSPORTE", "1pVnhOWvuGKn66CmXNhEZNTPpsiQMcBUpyrYtHMcmp-g")
 SPREADSHEET_URL_2 = "https://docs.google.com/spreadsheets/d/" + SPREADSHEET_ID_2 + "/edit"
+
+SPREADSHEET_ID_3  = os.getenv("SPREADSHEET_ID_VALDEX", "1hIVyui_6Ciol94CVtdhNDv7WKSkqz8lM79I0z9TvA_c")
+SPREADSHEET_URL_3 = "https://docs.google.com/spreadsheets/d/" + SPREADSHEET_ID_3 + "/edit"
 
 def get_target_day():
     now = datetime.datetime.now()
@@ -71,6 +78,7 @@ DISCORD_NFE_REPORT_CHANNEL_ID  = (
 )
 
 MAX_TENTATIVAS_GERACAO = 5
+LOCK_PEDIDO_TTL_SEGUNDOS = 2 * 60 * 60
 
 
 def env_bool(nome_variavel, padrao=False):
@@ -110,21 +118,24 @@ def get_user_data_dir():
 
 def get_browser_options():
     options = {
-        "headless": env_bool("NFE_HEADLESS", False),
+        "headless": env_bool("NFE_HEADLESS", True),
         "slow_mo": env_int("NFE_SLOW_MO_MS", 0),
         "viewport": {"width": 1366, "height": 768},
     }
-    if env_bool("NFE_RECORD_VIDEO", False):
+    if env_bool("NFE_RECORD_VIDEO", True):
         os.makedirs(os.path.join(BASE_DIR, "videos"), exist_ok=True)
         options["record_video_dir"] = os.path.join(BASE_DIR, "videos/")
     return options
 
 
 def texto_curto(texto, limite=900):
-    texto = re.sub(r"\s+", " ", str(texto or "")).strip()
-    if len(texto) > limite:
-        return texto[:limite - 3] + "..."
-    return texto
+    if not texto:
+        return ""
+    linhas = [re.sub(r"[^\S\r\n]+", " ", line).strip() for line in str(texto).splitlines()]
+    texto_formatado = "\n".join(linhas).strip()
+    if len(texto_formatado) > limite:
+        return texto_formatado[:limite - 3] + "..."
+    return texto_formatado
 
 
 def motivo_erro_externo(resultado):
@@ -148,6 +159,10 @@ def motivo_erro_externo(resultado):
         ("ja faturado", "Pedido ja faturado ou indisponivel para gerar NFe"),
         ("indisponivel", "ERP nao disponibilizou a geracao para este pedido"),
         ("sem confirmacao clara", "ERP nao confirmou autorizacao da NFe"),
+        ("invalid child element", "Erro de validacao de dados no cadastro/SEFAZ"),
+        ("element", "Erro de validacao de dados no cadastro/SEFAZ"),
+        ("expected", "Erro de validacao de dados no cadastro/SEFAZ"),
+        ("schema", "Erro de schema XML no cadastro/SEFAZ"),
     ]
     for chave, motivo in motivos:
         if chave in txt:
@@ -167,6 +182,129 @@ def erro_de_sessao_ou_rede(resultado):
         "timeout",
         "net::",
     ])
+
+
+def caminho_lock_pedido(pedido):
+    pedido_limpo = re.sub(r"\D+", "", str(pedido or "")) or "sem_numero"
+    return os.path.join(LOCKS_DIR, f"pedido_{pedido_limpo}.lock")
+
+
+def adquirir_lock_pedido(pedido):
+    os.makedirs(LOCKS_DIR, exist_ok=True)
+    lock_path = caminho_lock_pedido(pedido)
+
+    try:
+        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        with os.fdopen(fd, "w") as f:
+            f.write(f"pid={os.getpid()}\ncriado_em={datetime.datetime.now().isoformat()}\n")
+        return lock_path
+    except FileExistsError:
+        try:
+            idade = time.time() - os.path.getmtime(lock_path)
+            if idade > LOCK_PEDIDO_TTL_SEGUNDOS:
+                logging.info(f"      [AVISO] Lock antigo removido para o pedido {pedido}.")
+                os.remove(lock_path)
+                return adquirir_lock_pedido(pedido)
+        except Exception as e:
+            logging.info(f"      [AVISO] Nao foi possivel verificar lock do pedido {pedido}: {e}")
+        return None
+
+
+def liberar_lock_pedido(lock_path):
+    if not lock_path:
+        return
+    try:
+        os.remove(lock_path)
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        logging.info(f"      [AVISO] Nao foi possivel liberar lock {lock_path}: {e}")
+
+
+async def boleto_ja_emitido(erp_page):
+    """Detecta sinais fortes de boleto ja existente antes de gerar algo novo."""
+    try:
+        texto = await erp_page.locator("body").inner_text(timeout=5000)
+    except Exception:
+        return False, ""
+
+    texto_normalizado = re.sub(r"\s+", " ", texto or "").strip().lower()
+    if not texto_normalizado:
+        return False, ""
+
+    padroes_boleto_emitido = [
+        r"boleto\s+(?:ja\s+)?(?:emitido|gerado|existente|registrado)",
+        r"boleto\(s\)\s+(?:emitido|gerado|registrado)",
+        r"2[ªa]\s+via\s+(?:do\s+)?boleto",
+        r"segunda\s+via\s+(?:do\s+)?boleto",
+        r"linha\s+digit[aá]vel\s*[:\-]?\s*\d",
+        r"nosso\s+n[uú]mero\s*[:\-]?\s*\d",
+        r"imprimir\s+boleto",
+        r"visualizar\s+boleto",
+        r"baixar\s+boleto",
+        r"reimprimir\s+boleto",
+    ]
+
+    for padrao in padroes_boleto_emitido:
+        if re.search(padrao, texto_normalizado, re.IGNORECASE):
+            return True, padrao
+
+    return False, ""
+
+
+async def gerar_boleto_se_necessario(erp_page, pedido):
+    boleto_emitido, padrao_boleto = await boleto_ja_emitido(erp_page)
+    if boleto_emitido:
+        logging.info(f"  Boleto ja consta no ERP para o pedido {pedido} ({padrao_boleto}).")
+        return "OK - NFe autorizada; boleto ja consta no ERP"
+
+    seletores_boleto = [
+        r"Gerar\s+Boleto",
+        r"Emitir\s+Boleto",
+        r"Gerar\s+Boleto\(s\)",
+    ]
+
+    for padrao in seletores_boleto:
+        btn_boleto = erp_page.get_by_text(re.compile(padrao, re.IGNORECASE)).last
+        try:
+            if await btn_boleto.count() > 0 and await btn_boleto.is_visible():
+                await btn_boleto.click()
+                logging.info(f"  Boleto gerado para o pedido {pedido}.")
+                await asyncio.sleep(3)
+                await esperar_carregamento_erp(erp_page)
+                return "OK - NFe autorizada; boleto gerado"
+        except Exception as e:
+            return "ERRO ao gerar boleto: " + str(e)
+
+    logging.info(f"  NFe autorizada com sucesso para o pedido {pedido}.")
+    return "OK - NFe autorizada (sem boleto)"
+
+
+async def contar_boletos_erp(erp_page):
+    """Conta a quantidade de parcelas/boletos gerados na tela do ERP com verificação estrita de Pix/Cartão/À Vista."""
+    try:
+        # Verificar se a tela indica pagamento sem boleto (Pix, Cartão, Dinheiro, À vista)
+        texto_tela = (await erp_page.locator("body").inner_text(timeout=5000)).lower()
+        if any(metodo in texto_tela for metodo in ["pix", "cartão", "cartao", "à vista", "a vista", "dinheiro", "sem boleto"]):
+            cnt_boletos = await erp_page.locator("a:has-text('Imprimir'), a:has-text('Boleto'), a:has-text('Visualizar')").count()
+            if cnt_boletos == 0:
+                logging.info("  Forma de pagamento sem boleto detectada (Pix/Cartão/À vista). Contabilizando 0 boletos.")
+                return 0
+
+        locators = [
+            erp_page.locator("a:has-text('Imprimir'), a:has-text('Boleto'), a:has-text('Visualizar')"),
+            erp_page.locator("tr:has-text('Parcela'), tr:has-text('Duplicata')"),
+            erp_page.locator("text=/parcela\\s+\\d+/i"),
+        ]
+        qtd_maxima = 1
+        for loc in locators:
+            cnt = await loc.count()
+            if cnt > qtd_maxima:
+                qtd_maxima = cnt
+        return qtd_maxima
+    except Exception as e:
+        logging.warning(f"  Aviso ao contar boletos no ERP: {e}")
+        return 1
 
 
 def _enviar_mensagem_discord_sync(mensagem: str):
@@ -234,48 +372,55 @@ async def sofia_relatorio(resultados: list):
     """
     Envia um relatório consolidado da rodada do cron como a SofIA.
     resultados: lista de dicts com chaves 'pedido', 'planilha', 'resultado'
+    Cada pedido é exibido em sua própria linha para facilitar a leitura no Discord.
     """
     if not DISCORD_BOT_TOKEN and not DISCORD_WEBHOOK_URL:
         return
 
     agora = datetime.datetime.now().strftime("%d/%m/%Y às %H:%M")
 
-    ok_lines    = []
+    ok_lines     = []
     pulado_lines = []
-    erro_lines  = []
+    erro_lines   = []
 
     for r in resultados:
         pedido   = r["pedido"]
         planilha = r["planilha"]
         res      = str(r["resultado"])
-        linha    = f"• Pedido **{pedido}** ({planilha})"
 
         if res.startswith("OK"):
-            ok_lines.append(f"{linha} → ✅ {res}")
+            ok_lines.append(f"✅ Pedido {pedido} — {planilha} ➔ {res}")
         elif "PULADO" in res or "Ja Faturado" in res:
-            pulado_lines.append(f"{linha} → ⏭️ Já faturado")
+            pulado_lines.append(f"⏭️ Pedido {pedido} — {planilha}")
         else:
-            motivo = motivo_erro_externo(res) or texto_curto(res, 200)
-            erro_lines.append(f"{linha} → ❌ {motivo}")
+            motivo = motivo_erro_externo(res) or texto_curto(res, 150)
+            erro_lines.append(f"❌ Pedido {pedido} — {planilha}\n↳ {motivo}")
 
-    partes = [f"📋 **Relatório NFe — {agora}**"]
+    linhas = []
 
+    # ── Cabeçalho ──────────────────────────────────────────────────────────────
+    linhas.append(f"📋 Relatório NFe — {agora}")
+
+    # ── Sucessos ───────────────────────────────────────────────────────────────
     if ok_lines:
-        partes.append("\n✅ **NFes geradas com sucesso:**")
-        partes.extend(ok_lines)
+        linhas.append(f"✅ NFes emitidas ({len(ok_lines)})")
+        linhas.extend(ok_lines)
 
+    # ── Já faturados ───────────────────────────────────────────────────────────
     if pulado_lines:
-        partes.append("\n⏭️ **Já faturados (pulados):**")
-        partes.extend(pulado_lines)
+        linhas.append(f"⏭️ Já faturados ({len(pulado_lines)})")
+        linhas.extend(pulado_lines)
 
+    # ── Erros ──────────────────────────────────────────────────────────────────
     if erro_lines:
-        partes.append("\n❌ **Erros — requerem atenção:**")
-        partes.extend(erro_lines)
+        linhas.append(f"❌ Erros — requerem atenção ({len(erro_lines)})")
+        linhas.extend(erro_lines)
 
+    # ── Sem pendências ─────────────────────────────────────────────────────────
     if not ok_lines and not pulado_lines and not erro_lines:
-        partes.append("\n✅ Nenhum pedido pendente encontrado nas planilhas.")
+        linhas.append("✅ Nenhum pedido pendente encontrado nas planilhas.")
 
-    mensagem_final = "\n".join(partes)
+    mensagem_final = "\n".join(linhas)
     try:
         await asyncio.to_thread(_enviar_mensagem_discord_sync, mensagem_final)
         logging.info("[DISCORD] Relatório final enviado pela SofIA.")
@@ -577,6 +722,10 @@ async def gerar_nfe_erp(erp_page, pedido):
     # Abrir detalhes
     try:
         resultado = erp_page.locator("td:has-text('" + pedido + "'), tr:has-text('" + pedido + "')").first
+        if await resultado.count() == 0:
+            logging.info(f"  [!] Pedido {pedido} nao encontrado na grade de NFe do ERP. Provavelmente ja faturado.")
+            return "PULADO - Pedido nao localizado na grade (Ja Faturado)"
+
         await resultado.wait_for(state="visible", timeout=10000)
         await resultado.dblclick()
         await asyncio.sleep(2)
@@ -589,6 +738,14 @@ async def gerar_nfe_erp(erp_page, pedido):
             await icone.click()
             await asyncio.sleep(3)
             await esperar_carregamento_erp(erp_page)
+
+        boleto_existente, padrao_boleto = await boleto_ja_emitido(erp_page)
+        if boleto_existente:
+            logging.info(
+                f"  [!] Boleto ja emitido detectado para o pedido {pedido}. "
+                f"Nenhuma geracao nova sera feita. Sinal: {padrao_boleto}"
+            )
+            return "PULADO - Boleto ja emitido; nenhuma nova geracao feita"
         
         # --- FLUXO VITORIOSO (PADRAO 1585) ---
         # Tentar encontrar o botao GERAR NFE. Se ele existir, fazemos o processo.
@@ -601,23 +758,15 @@ async def gerar_nfe_erp(erp_page, pedido):
                 
                 # Espera dinâmica pelo botão SIM
                 btn_sim = erp_page.locator('button:has-text("SIM"), button:has-text("Sim")')
-                await btn_sim.wait_for(state="visible", timeout=10000)
+                await btn_sim.wait_for(state="visible", timeout=30000)
                 await btn_sim.click()
                 
                 await esperar_carregamento_erp(erp_page)
 
-                # Verificar autorizacao e gerar boleto
+                # Verificar autorizacao. O ERP gera o boleto automaticamente em alguns casos.
                 conteudo = (await erp_page.content()).lower()
                 if any(k in conteudo for k in ["autoriza", "sucesso", "emitida"]):
-                    logging.info("  NFe autorizada. Gerando boleto...")
-                    try:
-                        btn_boleto = erp_page.get_by_text(re.compile(r"Boleto", re.IGNORECASE)).last
-                        if await btn_boleto.count() > 0:
-                            await btn_boleto.click()
-                            logging.info("  Clicado em Boleto.")
-                            await asyncio.sleep(3)
-                    except: pass
-                    return "OK - NFe e Boleto Gerados"
+                    return await gerar_boleto_se_necessario(erp_page, pedido)
                 texto_tela = await erp_page.locator("body").inner_text(timeout=5000)
                 return "VERIFICAR - Sem confirmacao clara. Tela ERP: " + texto_curto(texto_tela, 700)
             else:
@@ -679,47 +828,77 @@ async def gerar_nfe_com_tentativas(context, erp_page, item):
     pedido = item["pedido"]
     planilha = item["planilha"]
     ultimo_resultado = None
+    lock_path = adquirir_lock_pedido(pedido)
 
-    for tentativa in range(1, MAX_TENTATIVAS_GERACAO + 1):
-        logging.info(f"\n  Tentativa {tentativa}/{MAX_TENTATIVAS_GERACAO} para o pedido {pedido} ({planilha})")
-        try:
-            ultimo_resultado = await gerar_nfe_erp(erp_page, pedido)
-        except Exception as e:
-            ultimo_resultado = "ERRO inesperado na automacao: " + str(e)
+    if not lock_path:
+        logging.info(f"  [!] Pedido {pedido} ja esta em processamento por outra execucao. Pulando para evitar duplicidade.")
+        return erp_page, "PULADO - Pedido ja em processamento por outra execucao"
 
-        logging.info(f"  Resultado Pedido {pedido} ({planilha}): {ultimo_resultado}")
+    try:
+        for tentativa in range(1, MAX_TENTATIVAS_GERACAO + 1):
+            logging.info(f"\n  Tentativa {tentativa}/{MAX_TENTATIVAS_GERACAO} para o pedido {pedido} ({planilha})")
+            try:
+                ultimo_resultado = await gerar_nfe_erp(erp_page, pedido)
+            except Exception as e:
+                ultimo_resultado = "ERRO inesperado na automacao: " + str(e)
 
-        if str(ultimo_resultado).startswith("OK"):
-            return erp_page, ultimo_resultado
+            logging.info(f"  Resultado Pedido {pedido} ({planilha}): {ultimo_resultado}")
 
-        motivo_externo = motivo_erro_externo(ultimo_resultado)
-        if motivo_externo:
-            await avisar_discord(
-                f"NFe nao gerada para o pedido {pedido} ({planilha}).\n"
-                f"Motivo externo: {motivo_externo}.\n"
-                f"Detalhe: {texto_curto(ultimo_resultado, 1200)}"
-            )
-            return erp_page, ultimo_resultado
+            if str(ultimo_resultado).startswith("OK"):
+                qtd_bol = await contar_boletos_erp(erp_page)
+                database.registrar_emissao(pedido, planilha, status="OK", qtd_boletos=qtd_bol, detalhes=str(ultimo_resultado))
+                return erp_page, f"{ultimo_resultado} [{qtd_bol} boleto(s)]"
 
-        if tentativa < MAX_TENTATIVAS_GERACAO:
-            if erro_de_sessao_ou_rede(ultimo_resultado):
-                logging.info("      [!] Detectada falha de rede/sessao. Recuperando ERP antes de tentar novamente...")
-                await asyncio.sleep(10)
-                try:
-                    erp_page = await context.new_page()
-                    await realizar_login_erp(erp_page)
-                except Exception as e:
-                    logging.info(f"      [!] Nao foi possivel recuperar a sessao ERP agora: {e}")
-            else:
-                logging.info("      [!] Falha possivelmente temporaria. Tentando novamente em 5s...")
-                await asyncio.sleep(5)
+            if str(ultimo_resultado).startswith("PULADO"):
+                qtd_bol = await contar_boletos_erp(erp_page)
+                database.registrar_emissao(pedido, planilha, status="PULADO", qtd_boletos=max(1, qtd_bol), detalhes=str(ultimo_resultado))
+                return erp_page, ultimo_resultado
 
-    await avisar_discord(
-        f"NFe nao gerada para o pedido {pedido} ({planilha}) apos "
-        f"{MAX_TENTATIVAS_GERACAO} tentativas.\n"
-        f"Ultimo retorno: {texto_curto(ultimo_resultado, 1200)}"
-    )
-    return erp_page, ultimo_resultado
+            motivo_externo = motivo_erro_externo(ultimo_resultado)
+            if motivo_externo:
+                database.registrar_emissao(pedido, planilha, status="ERRO", qtd_boletos=0, detalhes=str(motivo_externo))
+                await avisar_discord(
+                    f"⚠️ **NFe não gerada**\n"
+                    f"📦 Pedido {pedido} — {planilha}\n"
+                    f"🔎 Motivo: {motivo_externo}\n"
+                    f"📄 Detalhe: {texto_curto(ultimo_resultado, 300)}"
+                )
+                return erp_page, ultimo_resultado
+
+            if tentativa < MAX_TENTATIVAS_GERACAO:
+                if erro_de_sessao_ou_rede(ultimo_resultado):
+                    logging.info("      [!] Detectada falha de rede/sessao. Recuperando ERP antes de tentar novamente...")
+                    await asyncio.sleep(10)
+                    try:
+                        erp_page = await context.new_page()
+                        await realizar_login_erp(erp_page)
+                    except Exception as e:
+                        logging.info(f"      [!] Nao foi possivel recuperar a sessao ERP agora: {e}")
+                else:
+                    logging.info("      [!] Falha possivelmente temporaria. Tentando novamente em 5s...")
+                    await asyncio.sleep(5)
+
+        await avisar_discord(
+            f"❌ **NFe não gerada após {MAX_TENTATIVAS_GERACAO} tentativas**\n"
+            f"📦 Pedido {pedido} — {planilha}\n"
+            f"📄 Último retorno: {texto_curto(ultimo_resultado, 300)}"
+        )
+        return erp_page, ultimo_resultado
+    finally:
+        liberar_lock_pedido(lock_path)
+
+def limpar_locks_sessao_chrome(user_data_dir):
+    """Remove symlinks de lock do Chromium se deixados por um crash anterior."""
+    lock_files = ["SingletonLock", "SingletonSocket", "SingletonCookie"]
+    for lock in lock_files:
+        path = os.path.join(user_data_dir, lock)
+        if os.path.exists(path) or os.path.islink(path):
+            try:
+                os.remove(path)
+                logging.info(f"      [SESSAO] Symlink de lock antigo {lock} removido.")
+            except Exception as e:
+                logging.info(f"      [AVISO] Nao foi possivel remover {lock}: {e}")
+
 
 async def main():
     if not validar_credenciais_erp():
@@ -745,7 +924,38 @@ async def main():
         },
         {
             "nome": "Planilha Valdex",
-            "url": "https://docs.google.com/spreadsheets/d/1hIVyui_6Ciol94CVtdhNDv7WKSkqz8lM79I0z9TvA_c/edit",
+            "url": SPREADSHEET_URL_3,
+            "aba": aba_param,
+            "is_mes_atual": False,
+            "force_idx_h": 7 # Coluna H (Nota Fiscal Filial)
+        }
+    ]
+
+async def main():
+    if not validar_credenciais_erp():
+        return
+
+    aba_param = sys.argv[1] if len(sys.argv) > 1 else ABA_ALVO
+    logging.info("=== Automacao NFe Independente ===")
+
+    planilhas_config = [
+        {
+            "nome": "Planilha Principal",
+            "url": SPREADSHEET_URL_1,
+            "aba": aba_param,
+            "is_mes_atual": False,
+            "force_idx_h": None
+        },
+        {
+            "nome": "Planilha Transporte",
+            "url": SPREADSHEET_URL_2,
+            "aba": None,
+            "is_mes_atual": True,
+            "force_idx_h": 9 # Coluna J (0-indexed)
+        },
+        {
+            "nome": "Planilha Valdex",
+            "url": SPREADSHEET_URL_3,
             "aba": aba_param,
             "is_mes_atual": False,
             "force_idx_h": 7 # Coluna H (Nota Fiscal Filial)
@@ -755,111 +965,134 @@ async def main():
     user_data_dir = get_user_data_dir()
     logging.info(f"      Sessao do robo em: {user_data_dir}")
 
-    async with async_playwright() as p:
-        context = await p.chromium.launch_persistent_context(
-            user_data_dir,
-            **get_browser_options()
-        )
+    MAX_RETENTATIVAS_CICLO = 3
+    INTERVALO_MINUTOS = 3
+
+    for ciclo in range(1, MAX_RETENTATIVAS_CICLO + 1):
+        etapa_atual = "Inicialização do Navegador (Playwright / Chromium)"
+        limpar_locks_sessao_chrome(user_data_dir)
         
-        # Reutilizar a primeira pagina se ja existir
-        page = context.pages[0] if context.pages else await context.new_page()
-
-        # Aceitar dialogos automaticamente (Permitir acessar outros apps, etc)
-        page.on("dialog", lambda dialog: dialog.accept())
-
-        todos_pendentes = []
-
-        for p_conf in planilhas_config:
-            logging.info(f"\n--- Processando {p_conf['nome']} ---")
-            page, gid = await obter_gid_da_aba(page, p_conf['url'], p_conf['aba'], p_conf['is_mes_atual'])
-            if gid is None: 
-                continue
-
-            linhas = await ler_dados_csv(page, p_conf['url'], gid)
-            if linhas is None: 
-                continue
-
-            debug_csv = env_bool("NFE_DEBUG_CSV", False)
-            if debug_csv:
-                logging.info("\n  Depuracao de cabecalho (primeiras 3 linhas do CSV):")
-                for l in linhas[:3]:
-                    logging.info(f"    L{l['linha']}: {l['cells']}")
-
-            # Detectar indices de forma mais robusta (L2 e o cabecalho)
-            idx_c, idx_h = 2, 7 # Padrao encontrado no debug
-            for row in linhas:
-                if row["linha"] == 2: # Linha do cabecalho
-                    cells = row["cells"]
-                    for j, cell in enumerate(cells):
-                        txt = re.sub(r"[^a-z0-9]", "", cell.lower().strip())
-                        if "numeropedido" in txt or "nrpedido" in txt: 
-                            idx_c = j
-                        if "notafiscalfilial" in txt or "nffilial" in txt: 
-                            idx_h = j
-                    break
-            
-            if p_conf['force_idx_h'] is not None:
-                idx_h = p_conf['force_idx_h']
-
-            logging.info(f"\n  Iniciando analise de {len(linhas)} linhas...")
-            pendentes_planilha = 0
-            for row in linhas:
-                if row["linha"] <= 2: continue # Pular cabecalho
+        try:
+            async with async_playwright() as p:
+                context = await p.chromium.launch_persistent_context(
+                    user_data_dir,
+                    timeout=45000,
+                    **get_browser_options()
+                )
                 
-                cells = row["cells"]
-                if len(cells) <= max(idx_c, idx_h): continue
+                page = context.pages[0] if context.pages else await context.new_page()
+                page.on("dialog", lambda dialog: dialog.accept())
 
-                val_c = cells[idx_c].strip()
-                val_h = cells[idx_h].strip()
-                
-                # Extrair apenas os numeros do pedido (ex: 1585/2026 -> 1585)
-                pedido = extrair_pedido(val_c)
-                
-                if pedido:
-                    tem_nfe = numero_antes_da_barra(val_h)
+                todos_pendentes = []
+
+                for p_conf in planilhas_config:
+                    etapa_atual = f"Abertura e leitura da {p_conf['nome']}"
+                    logging.info(f"\n--- Processando {p_conf['nome']} ---")
+                    page, gid = await obter_gid_da_aba(page, p_conf['url'], p_conf['aba'], p_conf['is_mes_atual'])
+                    if gid is None: 
+                        continue
+
+                    linhas = await ler_dados_csv(page, p_conf['url'], gid)
+                    if linhas is None: 
+                        continue
+
+                    debug_csv = env_bool("NFE_DEBUG_CSV", False)
                     if debug_csv:
-                        status_txt = "[NFe OK]" if tem_nfe else "[PENDENTE]"
-                        logging.info(f"    L{row['linha']} | Pedido: {pedido} | NFe: '{val_h}' -> {status_txt}")
+                        logging.info("\n  Depuracao de cabecalho (primeiras 3 linhas do CSV):")
+                        for l in linhas[:3]:
+                            logging.info(f"    L{l['linha']}: {l['cells']}")
 
-                    if not tem_nfe:
-                        pendentes_planilha += 1
-                        logging.info(f"      [!] Adicionado a fila: {pedido}")
-                        todos_pendentes.append({"pedido": pedido, "planilha": p_conf['nome']})
+                    idx_c, idx_h = 2, 7
+                    for row in linhas:
+                        if row["linha"] == 2:
+                            cells = row["cells"]
+                            for j, cell in enumerate(cells):
+                                txt = re.sub(r"[^a-z0-9]", "", cell.lower().strip())
+                                if "numeropedido" in txt or "nrpedido" in txt: 
+                                    idx_c = j
+                                if "notafiscalfilial" in txt or "nffilial" in txt: 
+                                    idx_h = j
+                            break
+                    
+                    if p_conf['force_idx_h'] is not None:
+                        idx_h = p_conf['force_idx_h']
 
-            logging.info(f"  Pendentes encontrados em {p_conf['nome']}: {pendentes_planilha}")
-        
-        if not todos_pendentes:
-            logging.info("\n  [OK] Nada pendente em nenhuma planilha!")
-            await sofia_relatorio([])
-            await context.close()
-            return
+                    logging.info(f"\n  Iniciando analise de {len(linhas)} linhas...")
+                    pendentes_planilha = 0
+                    for row in linhas:
+                        if row["linha"] <= 2: continue
+                        
+                        cells = row["cells"]
+                        if len(cells) <= max(idx_c, idx_h): continue
 
-        logging.info("\n  Pendentes totais: " + str([p["pedido"] for p in todos_pendentes]))
+                        val_c = cells[idx_c].strip()
+                        val_h = cells[idx_h].strip()
+                        
+                        pedido = extrair_pedido(val_c)
+                        
+                        if pedido:
+                            tem_nfe = numero_antes_da_barra(val_h)
+                            if debug_csv:
+                                status_txt = "[NFe OK]" if tem_nfe else "[PENDENTE]"
+                                logging.info(f"    L{row['linha']} | Pedido: {pedido} | NFe: '{val_h}' -> {status_txt}")
 
-        erp_page = await context.new_page()
-        if not await realizar_login_erp(erp_page):
-            await context.close()
-            return
+                            if not tem_nfe:
+                                pendentes_planilha += 1
+                                logging.info(f"      [!] Adicionado a fila: {pedido}")
+                                todos_pendentes.append({"pedido": pedido, "planilha": p_conf['nome']})
 
-        # Coletar todos os resultados para o relatório final
-        resultados_finais = []
-        for item in todos_pendentes:
-            erp_page, resultado = await gerar_nfe_com_tentativas(context, erp_page, item)
-            resultados_finais.append({
-                "pedido":   item["pedido"],
-                "planilha": item["planilha"],
-                "resultado": resultado,
-            })
-        
-        # Enviar relatório consolidado via SofIA
-        await sofia_relatorio(resultados_finais)
+                    logging.info(f"  Pendentes encontrados em {p_conf['nome']}: {pendentes_planilha}")
+                
+                if not todos_pendentes:
+                    logging.info("\n  [OK] Nada pendente em nenhuma planilha!")
+                    await sofia_relatorio([])
+                    await context.close()
+                    return
 
-        logging.info("\n" + "="*50)
-        logging.info("PROCESSAMENTO CONCLUIDO")
-        logging.info("="*50)
-        if sys.stdin.isatty():
-            input("\nPressione ENTER para fechar o navegador...")
-        await context.close()
+                logging.info("\n  Pendentes totais: " + str([p["pedido"] for p in todos_pendentes]))
+
+                etapa_atual = f"Acesso e Login no ERP ({USUARIO})"
+                erp_page = await context.new_page()
+                if not await realizar_login_erp(erp_page):
+                    await context.close()
+                    raise RuntimeError("Não foi possível realizar login no ERP.")
+
+                resultados_finais = []
+                for item in todos_pendentes:
+                    etapa_atual = f"Emissão NFe do Pedido {item['pedido']} ({item['planilha']})"
+                    erp_page, resultado = await gerar_nfe_com_tentativas(context, erp_page, item)
+                    resultados_finais.append({
+                        "pedido":   item["pedido"],
+                        "planilha": item["planilha"],
+                        "resultado": resultado,
+                    })
+                
+                await sofia_relatorio(resultados_finais)
+
+                logging.info("\n" + "="*50)
+                logging.info("PROCESSAMENTO CONCLUIDO")
+                logging.info("="*50)
+                if sys.stdin.isatty():
+                    input("\nPressione ENTER para fechar o navegador...")
+                await context.close()
+                return # Sucesso!
+        except Exception as e:
+            logging.error(f"[ERRO CRITICO] Falha na etapa '{etapa_atual}': {e}")
+            if ciclo < MAX_RETENTATIVAS_CICLO:
+                await avisar_discord(
+                    f"⚠️ **Timeout / Falha Temporária (Tentativa {ciclo}/{MAX_RETENTATIVAS_CICLO})**\n"
+                    f"📍 Etapa: {etapa_atual}\n"
+                    f"📄 Detalhe: {texto_curto(str(e), 200)}\n"
+                    f"⏳ Tentando novamente em {INTERVALO_MINUTOS} minutos..."
+                )
+                logging.info(f"      [RETENTATIVA] Aguardando {INTERVALO_MINUTOS} minutos antes da tentativa {ciclo+1}...")
+                await asyncio.sleep(INTERVALO_MINUTOS * 60)
+            else:
+                await avisar_discord(
+                    f"❌ **Falha na Execução NFe após {MAX_RETENTATIVAS_CICLO} tentativas**\n"
+                    f"📍 Etapa com falha: {etapa_atual}\n"
+                    f"📄 Detalhe: {texto_curto(str(e), 250)}"
+                )
 
 async def processar_pedido_avulso(pedido: str) -> str:
     if not validar_credenciais_erp():

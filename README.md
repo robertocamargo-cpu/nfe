@@ -39,10 +39,11 @@ A equipe financeira precisava abrir o ERP manualmente várias vezes ao dia, busc
 - ✅ Varredura automática de 3 planilhas do Google Sheets (Principal, Transporte e Valdex)
 - ✅ Identificação de pedidos **sem nota fiscal** ainda pendentes
 - ✅ Acesso automatizado ao ERP ADMSIS via Playwright (robô de navegador)
-- ✅ Emissão da NFe e geração do Boleto em sequência
+- ✅ Emissão da NFe com proteção contra duplicidade de boleto
 - ✅ Bot Discord **SofIA** para solicitação avulsa no canal NFe (`@SofIA crie a NF 9999`)
 - ✅ Sistema de fila no Discord (vários pedidos simultâneos processados em ordem)
 - ✅ Alertas e relatórios via API do bot Discord, com fallback por webhook
+- ✅ Geração de boleto quando faltar, sem repetir quando já existir
 - ✅ Rejeição automática (tenta até 5 vezes antes de desistir)
 - ✅ Persistência de sessão do navegador (reutiliza login entre execuções)
 
@@ -93,8 +94,9 @@ MODO AUTOMÁTICO (Cron a cada hora):
                       │
                       ├─► Login no ERP ADMSIS (erp.admsis.com)
                       ├─► Pesquisa o pedido
+                      ├─► Verifica se boleto já existe
                       ├─► Clica em "Gerar NFe" → confirma
-                      └─► Clica em "Gerar Boleto"
+                      └─► Gera boleto somente se ele ainda não existir
                               │
                               └─► Discord Bot/Webhook (relatório e alertas)
 
@@ -114,6 +116,12 @@ MODO AVULSO (Bot Discord):
                               │
                               └─► Responde no Discord ✅ ou ❌
 ```
+
+### Regra Crítica de Boleto
+
+O robô deve **gerar boleto quando ainda não existe** e **nunca gerar novamente quando já existe**. Esta regra evita tanto duplicidade quanto falta de boleto após NFe autorizada.
+
+Caso de referência: em `12/08/2026`, o pedido `3310` teve a NFe autorizada, mas o boleto não foi gerado porque a proteção anti-duplicidade estava conservadora demais. A regra correta foi fixada em `gerar_boleto_se_necessario()`.
 
 ### Arquivos do Projeto
 

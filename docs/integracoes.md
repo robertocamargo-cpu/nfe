@@ -21,13 +21,19 @@ O sistema se comunica com 3 serviços externos: ERP ADMSIS, Google Sheets e Disc
 3. Navega para a tela de geração de NFe (`eng_tela=0103030100`)
 4. Clica na lupa de pesquisa, preenche o número do pedido e clica em **Filtrar**
 5. Dá duplo-clique no resultado encontrado para abrir o pedido
-6. Clica no botão **Gerar NFE** e confirma com **SIM**
-7. Aguarda confirmação da SEFAZ e clica em **Boleto** se autorizado
+6. Verifica se já existe boleto emitido para o pedido
+7. Se já existir boleto, pula o pedido sem gerar nada novamente
+8. Se não existir, clica no botão **Gerar NFE** e confirma com **SIM**
+9. Aguarda confirmação da SEFAZ e gera boleto somente se ele ainda não constar no ERP
 
 ### Retornos Possíveis
 | Resultado | Significado |
 |-----------|-------------|
-| `OK - NFe e Boleto Gerados` | ✅ Sucesso completo |
+| `OK - NFe autorizada; boleto ja consta no ERP` | ✅ NFe autorizada e boleto já detectado |
+| `OK - NFe autorizada; boleto gerado` | ✅ NFe autorizada e boleto gerado porque ainda não constava no ERP |
+| `VERIFICAR - NFe autorizada, mas boleto nao foi localizado/gerado` | ⚠️ NFe autorizada, mas o robô não encontrou o botão de geração de boleto |
+| `PULADO - Boleto ja emitido; nenhuma nova geracao feita` | ⏭️ Pedido pulado para evitar duplicidade de boleto |
+| `PULADO - Pedido ja em processamento por outra execucao` | ⏭️ Pedido pulado porque cron/Discord já está processando o mesmo número |
 | `PULADO - Ja Faturado ou Indisponivel` | ⏭️ Pedido já tinha nota |
 | `VERIFICAR - Sem confirmacao clara` | ⚠️ Emitido mas sem confirmação visual — checar manualmente |
 | `FALHA: Rejeicao retornada pelo ERP/SEFAZ` | ❌ SEFAZ rejeitou — requer correção manual |
@@ -124,8 +130,8 @@ Ao final de cada execução agendada, a SofIA envia um **relatório consolidado*
 📋 Relatório NFe — 10/08/2026 às 11:50
 
 ✅ NFes geradas com sucesso:
-• Pedido 1585 (Planilha Principal) → ✅ OK - NFe e Boleto Gerados
-• Pedido 2001 (Planilha Transporte) → ✅ OK - NFe e Boleto Gerados
+• Pedido 1585 (Planilha Principal) → ✅ OK - NFe autorizada; boleto ja consta no ERP
+• Pedido 2001 (Planilha Transporte) → ✅ OK - NFe autorizada; boleto gerado
 
 ⏭️ Já faturados (pulados):
 • Pedido 1580 (Planilha Valdex) → ⏭️ Já faturado

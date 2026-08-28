@@ -4,6 +4,7 @@ import asyncio
 import discord
 from dotenv import load_dotenv
 
+import database
 # Importa a lógica do script existente
 from gerar_nfe_automatica import processar_pedido_avulso
 
@@ -90,15 +91,15 @@ async def worker_fila():
         try:
             resultado = await processar_pedido_avulso(pedido_extraido)
             if "OK" in resultado:
-                await msg_status.reply(f"✅ **Sucesso!** O pedido **{pedido_extraido}** foi processado. Resultado: `{resultado}`")
+                await msg_status.reply(f"✅ Pedido **{pedido_extraido}** — Processado com sucesso\n📄 Resultado: {resultado}")
             elif "FALHA" in resultado or "ERRO" in resultado:
-                await msg_status.reply(f"❌ **Erro!** Ocorreu um problema ao processar o pedido **{pedido_extraido}**. Detalhe: `{resultado}`")
+                await msg_status.reply(f"❌ Pedido **{pedido_extraido}** — Erro no processamento\n↳ Detalhe: {resultado}")
             else:
-                await msg_status.reply(f"⚠️ **Aviso:** Resultado do pedido **{pedido_extraido}**: `{resultado}`")
+                await msg_status.reply(f"⚠️ Pedido **{pedido_extraido}** — {resultado}")
         except asyncio.CancelledError:
-            await msg_status.reply(f"🛑 **Cancelado:** O processamento do pedido **{pedido_extraido}** foi interrompido.")
+            await msg_status.reply(f"🛑 Pedido **{pedido_extraido}** — Processamento interrompido.")
         except Exception as e:
-            await msg_status.reply(f"❌ **Erro fatal** ao executar a automação: `{str(e)}`")
+            await msg_status.reply(f"❌ Pedido **{pedido_extraido}** — Erro na automação\n↳ {str(e)}")
         finally:
             processando_agora = None
             pedido_queue.task_done()
@@ -123,8 +124,19 @@ async def on_message(message):
     if message.author == client.user:
         return
 
-    # Só processa se o bot for explicitamente mencionado (@SofIA)
-    if client.user not in message.mentions:
+    # Processa se o bot for mencionado (@SofIA) ou se o nome 'sofia' estiver no texto
+    mencionou_bot = (client.user in message.mentions) or ("sofia" in message.clean_content.lower())
+    if not mencionou_bot:
+        return
+
+    # Se a mensagem mencionar explicitamente outro usuário no texto (ex: @Fulano), ignora conversa de terceiros
+    # Não ignora se for apenas uma resposta (reply) do Discord onde o usuário marcou @SofIA
+    outras_mencoes_no_texto = [
+        m for m in message.mentions 
+        if m != client.user and (f"@{m.display_name.lower()}" in message.clean_content.lower() or f"@{m.name.lower()}" in message.clean_content.lower())
+    ]
+    if outras_mencoes_no_texto:
+        print(f"[DEBUG] Mensagem cita outro usuário no texto ({[m.name for m in outras_mencoes_no_texto]}). Ignorando conversa de terceiros.")
         return
 
     canal_id = message.channel.id
@@ -133,7 +145,7 @@ async def on_message(message):
     # Usa clean_content para evitar que IDs de menção virem números de pedido
     texto_msg = message.clean_content.lower().strip()
 
-    print(f"[DEBUG] Mencao recebida de {message.author} no canal {canal_id}.")
+    print(f"[DEBUG] Mencao recebida de {message.author} no canal {canal_id}: '{texto_msg}'")
 
     # ─── Canal não mapeado: ignora silenciosamente ───────────────────────────
     if canal_config is None:
@@ -164,14 +176,23 @@ async def on_message(message):
             )
             return
 
-        # Comando para gerar NFe
-        if re.search(r"(crie|gere|faça|faca|gerar|emitir).*(nf|nfe|nota)", texto_msg):
-            match_pedido = re.search(r"(\d+)(?:/(\d{2,4}))?", texto_msg)
+        # Comando de métricas de emissão
+        if any(k in texto_msg for k in ["metricas", "métricas", "relatorio", "relatório", "resumo", "quantas"]):
+            m = database.obter_metricas()
+            msg_metricas = (
+                f"📊 **Relatório de Emissões — SofIA** ({m['atualizado_em']})\n"
+                f"🟢 **Hoje ({m['hoje']['data']}):** {m['hoje']['nfe']} NFes | {m['hoje']['boletos']} Boletos\n"
+                f"🟡 **Ontem ({m['ontem']['data']}):** {m['ontem']['nfe']} NFes | {m['ontem']['boletos']} Boletos\n"
+                f"🔵 **Este Mês ({m['este_mes']['mes']}):** {m['este_mes']['nfe']} NFes | {m['este_mes']['boletos']} Boletos\n"
+                f"🟣 **Mês Passado ({m['mes_passado']['mes']}):** {m['mes_passado']['nfe']} NFes | {m['mes_passado']['boletos']} Boletos"
+            )
+            await message.reply(msg_metricas)
+            return
 
-            if not match_pedido:
-                await message.reply("Não consegui identificar o número do pedido. Exemplo válido: `@SofIA crie a nf 9999`")
-                return
+        # Comando para gerar NFe - Aceita qualquer comando que contenha número de pedido (ex: 3602, crie nf 3602, 3602/2026)
+        match_pedido = re.search(r"\b(\d{3,6})(?:/(\d{2,4}))?\b", texto_msg)
 
+        if match_pedido:
             pedido_extraido = str(match_pedido.group(1))
 
             print(f"[Discord Bot] NFe - Pedido {pedido_extraido} solicitado por {message.author}.")
@@ -196,8 +217,8 @@ async def on_message(message):
 
         # Mensagem mencionou a SofIA mas não é um comando reconhecido neste canal
         await message.reply(
-            "Olá! 👋 Neste canal posso **emitir Notas Fiscais**.\n"
-            "Use: `@SofIA crie a nf 9999` para gerar uma NF."
+            "Olá! 👋 Neste canal posso **emitir Notas Fiscais** ou **exibir métricas**.\n"
+            "Use: `@SofIA crie a nf 9999` para gerar uma NF ou `@SofIA métricas` para relatórios."
         )
 
 client.run(TOKEN)
