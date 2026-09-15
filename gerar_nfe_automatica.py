@@ -931,37 +931,6 @@ async def main():
         }
     ]
 
-async def main():
-    if not validar_credenciais_erp():
-        return
-
-    aba_param = sys.argv[1] if len(sys.argv) > 1 else ABA_ALVO
-    logging.info("=== Automacao NFe Independente ===")
-
-    planilhas_config = [
-        {
-            "nome": "Planilha Principal",
-            "url": SPREADSHEET_URL_1,
-            "aba": aba_param,
-            "is_mes_atual": False,
-            "force_idx_h": None
-        },
-        {
-            "nome": "Planilha Transporte",
-            "url": SPREADSHEET_URL_2,
-            "aba": None,
-            "is_mes_atual": True,
-            "force_idx_h": 9 # Coluna J (0-indexed)
-        },
-        {
-            "nome": "Planilha Valdex",
-            "url": SPREADSHEET_URL_3,
-            "aba": aba_param,
-            "is_mes_atual": False,
-            "force_idx_h": 7 # Coluna H (Nota Fiscal Filial)
-        }
-    ]
-
     user_data_dir = get_user_data_dir()
     logging.info(f"      Sessao do robo em: {user_data_dir}")
 
