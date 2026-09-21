@@ -432,9 +432,7 @@ async def sofia_relatorio(resultados: list):
 
     agora = datetime.datetime.now().strftime("%d/%m/%Y às %H:%M")
 
-    ok_lines   = []
-    erro_lines = []
-
+    total_boletos = 0
     for r in resultados:
         pedido   = r["pedido"]
         planilha = r["planilha"]
@@ -442,6 +440,13 @@ async def sofia_relatorio(resultados: list):
 
         if res.startswith("OK"):
             ok_lines.append(f"✅ Pedido {pedido} — {planilha} ➔ {res}")
+            if "boleto(s)" in res.lower() or "boleto gerado" in res.lower():
+                # Extrair a quantidade de boletos se especificada [X boleto(s)]
+                match_bol = re.search(r"\[(\d+)\s+boleto\(s\)\]", res, re.IGNORECASE)
+                if match_bol:
+                    total_boletos += int(match_bol.group(1))
+                else:
+                    total_boletos += 1
         elif "PULADO" in res or "Ja Faturado" in res:
             # Ignora pedidos já faturados / pulados (não exibe na mensagem)
             continue
@@ -456,7 +461,7 @@ async def sofia_relatorio(resultados: list):
 
     # ── Sucessos ───────────────────────────────────────────────────────────────
     if ok_lines:
-        linhas.append(f"✅ NFes emitidas ({len(ok_lines)})")
+        linhas.append(f"✅ NFes emitidas ({len(ok_lines)}) | Boletos gerados ({total_boletos})")
         linhas.extend(ok_lines)
 
     # ── Erros ──────────────────────────────────────────────────────────────────
