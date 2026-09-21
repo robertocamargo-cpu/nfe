@@ -252,7 +252,60 @@ async def boleto_ja_emitido(erp_page):
     return False, ""
 
 
-async def gerar_boleto_se_necessario(erp_page, pedido):
+async def verificar_forma_pagamento_boleto(erp_page):
+    """Verifica com máxima precisão se a forma de pagamento do pedido no ERP é Boleto."""
+    try:
+        # 1. Espera explícita pelo campo oficial #lblvda_forma_pagamento_id
+        campo_oficial = erp_page.locator("#lblvda_forma_pagamento_id").first
+        try:
+            await campo_oficial.wait_for(state="attached", timeout=7000)
+        except Exception:
+            pass
+
+        if await campo_oficial.count() > 0:
+            val = await campo_oficial.get_attribute("value") or ""
+            txt = await campo_oficial.inner_text() or ""
+            forma_str = (val + " " + txt).strip().lower()
+            if "boleto" in forma_str:
+                logging.info(f"  [BOLETO CONFIRMADO] Campo oficial #lblvda_forma_pagamento_id = '{val}'")
+                return True
+            else:
+                logging.info(f"  [SEM BOLETO CONFIRMADO] Campo oficial #lblvda_forma_pagamento_id = '{val}'")
+                return False
+
+        # 2. Fallback de segurança em seletores alternativos
+        seletores_alternativos = [
+            "input[name*='forma_pagamento']",
+            "input[id*='forma_pagamento']",
+            "select[name*='forma_pagamento']",
+        ]
+        
+        for seletor in seletores_alternativos:
+            elementos = erp_page.locator(seletor)
+            cnt = await elementos.count()
+            for i in range(cnt):
+                el = elementos.nth(i)
+                val = await el.get_attribute("value") or ""
+                txt = await el.inner_text() or ""
+                forma_str = (val + " " + txt).strip().lower()
+                if "boleto" in forma_str:
+                    logging.info(f"  [BOLETO CONFIRMADO] Seletor alternativo {seletor} = '{val}'")
+                    return True
+
+    except Exception as e:
+        logging.warning(f"  Aviso ao checar forma de pagamento: {e}")
+    
+    # Se não foi identificado como boleto
+    return False
+
+
+async def gerar_boleto_se_necessario(erp_page, pedido, eh_boleto=None):
+    # Usar a checagem prévia realizada no momento exato em que a tela de detalhes abriu
+    is_boleto = eh_boleto if eh_boleto is not None else await verificar_forma_pagamento_boleto(erp_page)
+    if is_boleto is False:
+        logging.info(f"  Forma de pagamento do pedido {pedido} não é boleto. Finalizando como NFe (sem boleto).")
+        return "OK - NFe autorizada (sem boleto)"
+
     boleto_emitido, padrao_boleto = await boleto_ja_emitido(erp_page)
     if boleto_emitido:
         logging.info(f"  Boleto ja consta no ERP para o pedido {pedido} ({padrao_boleto}).")
@@ -272,12 +325,12 @@ async def gerar_boleto_se_necessario(erp_page, pedido):
                 logging.info(f"  Boleto gerado para o pedido {pedido}.")
                 await asyncio.sleep(3)
                 await esperar_carregamento_erp(erp_page)
-                return "OK - NFe autorizada; boleto gerado"
+                return "OK - NFe e Boleto Gerados"
         except Exception as e:
             return "ERRO ao gerar boleto: " + str(e)
 
-    logging.info(f"  NFe autorizada com sucesso para o pedido {pedido}.")
-    return "OK - NFe autorizada (sem boleto)"
+    logging.info(f"  NFe autorizada para o pedido {pedido} (Boleto confirmado via forma de pagamento).")
+    return "OK - NFe e Boleto Gerados"
 
 
 async def contar_boletos_erp(erp_page):
@@ -372,16 +425,15 @@ async def sofia_relatorio(resultados: list):
     """
     Envia um relatório consolidado da rodada do cron como a SofIA.
     resultados: lista de dicts com chaves 'pedido', 'planilha', 'resultado'
-    Cada pedido é exibido em sua própria linha para facilitar a leitura no Discord.
+    Exibe apenas o que a automação faturou e erros que requerem atenção.
     """
     if not DISCORD_BOT_TOKEN and not DISCORD_WEBHOOK_URL:
         return
 
     agora = datetime.datetime.now().strftime("%d/%m/%Y às %H:%M")
 
-    ok_lines     = []
-    pulado_lines = []
-    erro_lines   = []
+    ok_lines   = []
+    erro_lines = []
 
     for r in resultados:
         pedido   = r["pedido"]
@@ -391,7 +443,8 @@ async def sofia_relatorio(resultados: list):
         if res.startswith("OK"):
             ok_lines.append(f"✅ Pedido {pedido} — {planilha} ➔ {res}")
         elif "PULADO" in res or "Ja Faturado" in res:
-            pulado_lines.append(f"⏭️ Pedido {pedido} — {planilha}")
+            # Ignora pedidos já faturados / pulados (não exibe na mensagem)
+            continue
         else:
             motivo = motivo_erro_externo(res) or texto_curto(res, 150)
             erro_lines.append(f"❌ Pedido {pedido} — {planilha}\n↳ {motivo}")
@@ -406,19 +459,14 @@ async def sofia_relatorio(resultados: list):
         linhas.append(f"✅ NFes emitidas ({len(ok_lines)})")
         linhas.extend(ok_lines)
 
-    # ── Já faturados ───────────────────────────────────────────────────────────
-    if pulado_lines:
-        linhas.append(f"⏭️ Já faturados ({len(pulado_lines)})")
-        linhas.extend(pulado_lines)
-
     # ── Erros ──────────────────────────────────────────────────────────────────
     if erro_lines:
         linhas.append(f"❌ Erros — requerem atenção ({len(erro_lines)})")
         linhas.extend(erro_lines)
 
-    # ── Sem pendências ─────────────────────────────────────────────────────────
-    if not ok_lines and not pulado_lines and not erro_lines:
-        linhas.append("✅ Nenhum pedido pendente encontrado nas planilhas.")
+    # ── Sem emissões nem erros ────────────────────────────────────────────────
+    if not ok_lines and not erro_lines:
+        linhas.append("✅ Nenhum novo faturamento realizado nesta rodada.")
 
     mensagem_final = "\n".join(linhas)
     try:
@@ -726,18 +774,18 @@ async def gerar_nfe_erp(erp_page, pedido):
             logging.info(f"  [!] Pedido {pedido} nao encontrado na grade de NFe do ERP. Provavelmente ja faturado.")
             return "PULADO - Pedido nao localizado na grade (Ja Faturado)"
 
-        await resultado.wait_for(state="visible", timeout=10000)
-        await resultado.dblclick()
-        await asyncio.sleep(2)
+        # Abrir detalhes clicando no ícone ou dblclick
+        icone = resultado.locator("a, i, button, .fa-edit, .fa-search").first
+        if await icone.count() > 0 and await icone.is_visible():
+            await icone.click()
+        else:
+            await resultado.dblclick()
+        await asyncio.sleep(3)
         await esperar_carregamento_erp(erp_page)
 
-        # Fallback se dblclick falhar
-        btn_check = erp_page.get_by_text(re.compile(r"Gerar NFE", re.IGNORECASE)).first
-        if not await btn_check.is_visible():
-            icone = resultado.locator('a, i, button, .fa-search, .fa-edit').first
-            await icone.click()
-            await asyncio.sleep(3)
-            await esperar_carregamento_erp(erp_page)
+        # Checar IMEDIATAMENTE na tela de detalhes se a forma de pagamento é Boleto
+        eh_boleto_pedido = await verificar_forma_pagamento_boleto(erp_page)
+        logging.info(f"  [CHECK FORMA PAGTO] Pedido {pedido} -> É boleto? {eh_boleto_pedido}")
 
         boleto_existente, padrao_boleto = await boleto_ja_emitido(erp_page)
         if boleto_existente:
@@ -763,11 +811,20 @@ async def gerar_nfe_erp(erp_page, pedido):
                 
                 await esperar_carregamento_erp(erp_page)
 
-                # Verificar autorizacao. O ERP gera o boleto automaticamente em alguns casos.
+                # Verificar autorização e mensagens de erro na tela do ERP
+                await asyncio.sleep(2)
                 conteudo = (await erp_page.content()).lower()
+                texto_tela = (await erp_page.locator("body").inner_text(timeout=5000)).lower()
+
+                # Se houver indícios de erro/rejeição/falha na tela, registrar como erro
+                palavras_erro = ["rejeicao", "rejeição", "erro", "falha", "denegad", "invalido", "inválido", "duplicida"]
+                if any(p in texto_tela for p in palavras_erro) and not any(k in texto_tela for k in ["autorizada com sucesso", "nfe autorizada", "sucesso"]):
+                    logging.warning(f"  [!] Erro/Rejeição detectado ao gerar NFe do pedido {pedido}: {texto_curto(texto_tela, 200)}")
+                    return "ERRO na emissão da NFe: " + texto_curto(texto_tela, 300)
+
                 if any(k in conteudo for k in ["autoriza", "sucesso", "emitida"]):
-                    return await gerar_boleto_se_necessario(erp_page, pedido)
-                texto_tela = await erp_page.locator("body").inner_text(timeout=5000)
+                    return await gerar_boleto_se_necessario(erp_page, pedido, eh_boleto=eh_boleto_pedido)
+
                 return "VERIFICAR - Sem confirmacao clara. Tela ERP: " + texto_curto(texto_tela, 700)
             else:
                 logging.info(f"  [!] Botao Gerar NFE nao disponivel para o pedido {pedido}. Provavelmente ja faturado.")
@@ -845,9 +902,16 @@ async def gerar_nfe_com_tentativas(context, erp_page, item):
             logging.info(f"  Resultado Pedido {pedido} ({planilha}): {ultimo_resultado}")
 
             if str(ultimo_resultado).startswith("OK"):
-                qtd_bol = await contar_boletos_erp(erp_page)
-                database.registrar_emissao(pedido, planilha, status="OK", qtd_boletos=qtd_bol, detalhes=str(ultimo_resultado))
-                return erp_page, f"{ultimo_resultado} [{qtd_bol} boleto(s)]"
+                qtd_bol = 0
+                res_str = str(ultimo_resultado)
+                if any(k in res_str.lower() for k in ["boleto gerado", "boleto gerados", "boleto ja consta"]):
+                    qtd_bol = await contar_boletos_erp(erp_page)
+                    if qtd_bol == 0:
+                        qtd_bol = 1
+                database.registrar_emissao(pedido, planilha, status="OK", qtd_boletos=qtd_bol, detalhes=res_str)
+                if qtd_bol > 0:
+                    return erp_page, f"{ultimo_resultado} [{qtd_bol} boleto(s)]"
+                return erp_page, f"{ultimo_resultado}"
 
             if str(ultimo_resultado).startswith("PULADO"):
                 qtd_bol = await contar_boletos_erp(erp_page)

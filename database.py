@@ -104,9 +104,9 @@ def obter_metricas():
         query = """
             SELECT 
                 COUNT(*) as total_nfe,
-                SUM(qtd_boletos) as total_boletos
+                COUNT(CASE WHEN detalhes LIKE '%Boleto Gerados%' THEN 1 END) as total_boletos
             FROM emissoes
-            WHERE data_emissao BETWEEN ? AND ? AND status IN ('OK', 'PULADO')
+            WHERE data_emissao BETWEEN ? AND ? AND status = 'OK'
         """
         cursor.execute(query, (inicio, fim))
         res = cursor.fetchone()
