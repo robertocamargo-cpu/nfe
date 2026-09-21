@@ -432,6 +432,8 @@ async def sofia_relatorio(resultados: list):
 
     agora = datetime.datetime.now().strftime("%d/%m/%Y às %H:%M")
 
+    ok_lines      = []
+    erro_lines    = []
     total_boletos = 0
     for r in resultados:
         pedido   = r["pedido"]
