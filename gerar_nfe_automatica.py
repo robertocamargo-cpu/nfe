@@ -1162,5 +1162,124 @@ async def processar_pedido_avulso(pedido: str) -> str:
         finally:
             await context.close()
 
+async def obter_arquivos_nfe_pedido(pedido: str) -> list:
+    """
+    Navega para a tela de consulta de NFes (0103050100), busca o pedido,
+    e faz o download do DANFE em PDF (e do Boleto se disponível).
+    Retorna uma lista de caminhos de arquivos PDF locais gerados.
+    """
+    if not validar_credenciais_erp():
+        logging.error("Credenciais do ERP nao encontradas.")
+        return []
+
+    pedido_limpo = re.sub(r"\D+", "", str(pedido or ""))
+    if not pedido_limpo:
+        return []
+
+    logging.info(f"=== Obter DANFE/Boleto: Pedido {pedido_limpo} ===")
+    user_data_dir = get_user_data_dir()
+    arquivos_gerados = []
+
+    async with async_playwright() as p:
+        context = await p.chromium.launch_persistent_context(
+            user_data_dir,
+            **get_browser_options()
+        )
+        try:
+            page = context.pages[0] if context.pages else await context.new_page()
+            page.on("dialog", lambda dialog: dialog.accept())
+
+            if not await realizar_login_erp(page):
+                logging.error("Falha ao logar no ERP para obter DANFE.")
+                return []
+
+            await page.goto("https://erp.admsis.com/Home?eng_tela=0103050100", timeout=60000)
+            await asyncio.sleep(2)
+            await esperar_carregamento_erp(page)
+
+            # 1. Abrir modal de pesquisa se existir
+            lupa = page.locator('.fa-search, .glyphicon-search, button[title*="Pesquisa"]').first
+            if await lupa.count() > 0 and await lupa.is_visible():
+                await lupa.click()
+                await asyncio.sleep(1)
+
+            # 2. Preencher número do pedido
+            campo_ped = page.locator("#nfe_venda_referencia").first
+            if await campo_ped.count() > 0:
+                await campo_ped.fill(pedido_limpo)
+
+            # 3. Filtrar
+            btn_filtrar = page.locator('button:has-text("FILTRAR"), button:has-text("Filtrar")').first
+            if await btn_filtrar.count() > 0:
+                await btn_filtrar.click(timeout=60000)
+                await asyncio.sleep(2)
+                await esperar_carregamento_erp(page)
+
+            # 4. Selecionar a linha correspondente ao pedido
+            tr = page.locator(f"tr:has-text('{pedido_limpo}')").first
+            if await tr.count() > 0:
+                link = tr.locator("a[href*='javascript:EngNavegacao.selecionar']").first
+                if await link.count() > 0:
+                    await link.click()
+                else:
+                    await tr.click()
+                await asyncio.sleep(2)
+                await esperar_carregamento_erp(page)
+
+                # 5. Download do DANFE
+                btn_danfe = page.locator("a:has-text('DANFE'), button:has-text('DANFE')").first
+                if await btn_danfe.count() > 0:
+                    try:
+                        async with page.expect_download(timeout=10000) as dl_info:
+                            await btn_danfe.click()
+                        dl = await dl_info.value
+                        danfe_path = os.path.join(BASE_DIR, f"DANFE_Pedido_{pedido_limpo}.pdf")
+                        await dl.save_as(danfe_path)
+                        arquivos_gerados.append(danfe_path)
+                        logging.info(f"DANFE baixado com sucesso: {danfe_path}")
+                    except Exception as e:
+                        logging.warning(f"Não foi possível baixar DANFE para o pedido {pedido_limpo}: {e}")
+
+                # 6. Download do Boleto (se existir botão de boleto na tela principal ou na aba Vencimentos)
+                btn_bol = page.locator("a:has-text('Boleto'), button:has-text('Boleto')").first
+                if await btn_bol.count() > 0:
+                    try:
+                        async with page.expect_download(timeout=5000) as dl_info:
+                            await btn_bol.click()
+                        dl = await dl_info.value
+                        bol_path = os.path.join(BASE_DIR, f"Boleto_Pedido_{pedido_limpo}.pdf")
+                        await dl.save_as(bol_path)
+                        arquivos_gerados.append(bol_path)
+                        logging.info(f"Boleto baixado com sucesso: {bol_path}")
+                    except Exception as e:
+                        logging.info(f"Sem boleto direto para o pedido {pedido_limpo}: {e}")
+
+                # Tentar aba Vencimentos se ainda não pegou boleto
+                if len(arquivos_gerados) == 1:
+                    venc_tab = page.locator("a:has-text('Vencimentos'), button:has-text('Vencimentos')").first
+                    if await venc_tab.count() > 0:
+                        try:
+                            await venc_tab.click()
+                            await asyncio.sleep(2)
+                            btn_bol_venc = page.locator("a:has-text('Boleto'), button:has-text('Boleto'), a:has-text('Imprimir')").first
+                            if await btn_bol_venc.count() > 0:
+                                async with page.expect_download(timeout=5000) as dl_info:
+                                    await btn_bol_venc.click()
+                                dl = await dl_info.value
+                                bol_path = os.path.join(BASE_DIR, f"Boleto_Pedido_{pedido_limpo}.pdf")
+                                await dl.save_as(bol_path)
+                                arquivos_gerados.append(bol_path)
+                                logging.info(f"Boleto via Vencimentos baixado com sucesso: {bol_path}")
+                        except Exception as e:
+                            logging.info(f"Nenhum boleto em Vencimentos para o pedido {pedido_limpo}: {e}")
+
+        except Exception as e:
+            logging.error(f"Erro ao buscar arquivos do pedido {pedido_limpo}: {e}")
+        finally:
+            await context.close()
+
+    return arquivos_gerados
+
 if __name__ == "__main__":
     asyncio.run(main())
+

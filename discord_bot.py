@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 import database
 # Importa a lógica do script existente
-from gerar_nfe_automatica import processar_pedido_avulso
+from gerar_nfe_automatica import processar_pedido_avulso, obter_arquivos_nfe_pedido
 
 # Carrega variáveis de ambiente do .env
 load_dotenv()
@@ -187,6 +187,32 @@ async def on_message(message):
                 f"🟣 **Mês Passado ({m['mes_passado']['mes']}):** {m['mes_passado']['nfe']} NFes | {m['mes_passado']['boletos']} Boletos"
             )
             await message.reply(msg_metricas)
+            return
+
+        # Comando "mostrar nota fiscal <pedido>", "ver nf <pedido>", "pdf nota fiscal <pedido>"
+        match_mostrar_nf = re.search(r"(?:mostrar|ver|buscar|baixar|enviar|pdf)\s+(?:nota\s+fiscal|nf|danfe)\s+(\d{3,6})\b", texto_msg)
+        if match_mostrar_nf:
+            pedido_req = match_mostrar_nf.group(1)
+            msg_busca = await message.reply(f"🔎 Buscando DANFE/Boleto do pedido **{pedido_req}** no ERP, aguarde...")
+            
+            arquivos = await obter_arquivos_nfe_pedido(pedido_req)
+            if not arquivos:
+                await msg_busca.edit(content=f"❌ Não foi possível localizar ou baixar a nota fiscal do pedido **{pedido_req}** no ERP.")
+                return
+
+            discord_files = [discord.File(filepath) for filepath in arquivos if os.path.exists(filepath)]
+            if discord_files:
+                await message.reply(
+                    f"📄 Aqui está a Nota Fiscal / Boleto do pedido **{pedido_req}**:",
+                    files=discord_files
+                )
+                await msg_busca.delete()
+                # Limpar arquivos temporários
+                for filepath in arquivos:
+                    try: os.remove(filepath)
+                    except: pass
+            else:
+                await msg_busca.edit(content=f"❌ Erro ao anexar o arquivo PDF da nota do pedido **{pedido_req}**.")
             return
 
         # Comando para gerar NFe - Aceita qualquer comando que contenha número de pedido (ex: 3602, crie nf 3602, 3602/2026)
