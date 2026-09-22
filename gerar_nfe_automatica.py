@@ -441,7 +441,8 @@ async def sofia_relatorio(resultados: list):
         res      = str(r["resultado"])
 
         if res.startswith("OK"):
-            ok_lines.append(f"✅ Pedido {pedido} — {planilha} ➔ {res}")
+            nome_planilha_limpo = planilha.replace("Planilha ", "")
+            ok_lines.append(f"✅ Pedido {pedido} — {nome_planilha_limpo} ➔ {res}")
             if "boleto(s)" in res.lower() or "boleto gerado" in res.lower():
                 # Extrair a quantidade de boletos se especificada [X boleto(s)]
                 match_bol = re.search(r"\[(\d+)\s+boleto\(s\)\]", res, re.IGNORECASE)
@@ -987,14 +988,14 @@ async def main():
             "force_idx_h": None
         },
         {
-            "nome": "Planilha Transporte",
+            "nome": "Planilha Transportadora",
             "url": SPREADSHEET_URL_2,
             "aba": None,
             "is_mes_atual": True,
             "force_idx_h": 9 # Coluna J (0-indexed)
         },
         {
-            "nome": "Planilha Valdex",
+            "nome": "Planilha Parceiras",
             "url": SPREADSHEET_URL_3,
             "aba": aba_param,
             "is_mes_atual": False,

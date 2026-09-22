@@ -50,12 +50,16 @@ def registrar_emissao(pedido: str, planilha: str, status: str, nfe_numero: str =
         cursor = conn.cursor()
         # Verificar se já existe registro deste pedido no dia de hoje
         cursor.execute(
-            "SELECT id FROM emissoes WHERE pedido = ? AND data_emissao = ?",
+            "SELECT id, status FROM emissoes WHERE pedido = ? AND data_emissao = ?",
             (str(pedido), hoje_str)
         )
         existente = cursor.fetchone()
 
         if existente:
+            # Se o registro existente hoje já foi 'OK', não sobrescreve com 'PULADO'
+            if existente["status"] == "OK" and status == "PULADO":
+                logging.info(f"      [BD] Pedido {pedido} já consta como OK hoje. Mantendo status OK (ignorando PULADO).")
+                return
             cursor.execute("""
                 UPDATE emissoes
                 SET planilha = ?, nfe_numero = ?, qtd_boletos = ?, status = ?, detalhes = ?, timestamp = ?
