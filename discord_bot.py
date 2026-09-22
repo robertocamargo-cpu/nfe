@@ -189,10 +189,14 @@ async def on_message(message):
             await message.reply(msg_metricas)
             return
 
-        # Comando "mostrar nota fiscal <pedido>", "ver nf <pedido>", "pdf nota fiscal <pedido>"
-        match_mostrar_nf = re.search(r"(?:mostrar|ver|buscar|baixar|enviar|pdf)\s+(?:nota\s+fiscal|nf|danfe)\s+(\d{3,6})\b", texto_msg)
-        if match_mostrar_nf:
-            pedido_req = match_mostrar_nf.group(1)
+        # Comando "mostrar nota fiscal <pedido>", "ver nf <pedido>", "pdf nota fiscal <pedido>", "3352 pdf", etc.
+        palavras_consulta = ["mostrar", "ver", "buscar", "baixar", "enviar", "pdf", "obter", "danfe", "segunda via", "2via"]
+        eh_consulta = any(p in texto_msg for p in palavras_consulta)
+
+        match_numero = re.search(r"\b(\d{3,6})(?:/(\d{2,4}))?\b", texto_msg)
+
+        if eh_consulta and match_numero:
+            pedido_req = match_numero.group(1)
             msg_busca = await message.reply(f"🔎 Buscando DANFE/Boleto do pedido **{pedido_req}** no ERP, aguarde...")
             
             arquivos = await obter_arquivos_nfe_pedido(pedido_req)
@@ -215,11 +219,12 @@ async def on_message(message):
                 await msg_busca.edit(content=f"❌ Erro ao anexar o arquivo PDF da nota do pedido **{pedido_req}**.")
             return
 
-        # Comando para gerar NFe - Aceita qualquer comando que contenha número de pedido (ex: 3602, crie nf 3602, 3602/2026)
-        match_pedido = re.search(r"\b(\d{3,6})(?:/(\d{2,4}))?\b", texto_msg)
+        # Comando para gerar/emitir NFe - Apenas aciona faturamento se contiver verbos de emissão ou apenas o número solto
+        palavras_emissao = ["gerar", "emitir", "faturar", "crie", "criar", "faz", "fazer"]
+        eh_emissao_explicita = any(p in texto_msg for p in palavras_emissao) or re.match(r"^(?:<@!?\d+>|\bsofia\b)?\s*(\d{3,6})(?:/(\d{2,4}))?\s*$", texto_msg)
 
-        if match_pedido:
-            pedido_extraido = str(match_pedido.group(1))
+        if match_numero and (eh_emissao_explicita or not eh_consulta):
+            pedido_extraido = str(match_numero.group(1))
 
             print(f"[Discord Bot] NFe - Pedido {pedido_extraido} solicitado por {message.author}.")
 
@@ -243,8 +248,10 @@ async def on_message(message):
 
         # Mensagem mencionou a SofIA mas não é um comando reconhecido neste canal
         await message.reply(
-            "Olá! 👋 Neste canal posso **emitir Notas Fiscais** ou **exibir métricas**.\n"
-            "Use: `@SofIA crie a nf 9999` para gerar uma NF ou `@SofIA métricas` para relatórios."
+            "Olá! 👋 Neste canal posso **enviar Notas Fiscais/Boletos** em PDF ou **emitir NFes**.\n"
+            "• Para ver PDF: `@SofIA mostrar nota fiscal 3352` ou `@SofIA ver nf 3352`\n"
+            "• Para emitir NF: `@SofIA emitir nf 3352` ou `@SofIA faturar 3352`"
         )
+
 
 client.run(TOKEN)

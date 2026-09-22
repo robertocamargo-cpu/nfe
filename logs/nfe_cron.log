@@ -98872,3 +98872,55 @@ discord.errors.ConnectionClosed: Shard ID None WebSocket closed with 1000
   [ERP] Acessando sistema...
 2026-09-22 14:11:49,403 [INFO]       Verificando sessao ativa...
 2026-09-22 14:11:49,452 [INFO]       Sessao ativa detectada (N_ROBOTRON). Pulando login.
+2026-09-22 14:15:46,049 [INFO] === Automacao NFe Avulsa: Pedido 3352 ===
+2026-09-22 14:15:46,847 [INFO] 
+  [ERP] Acessando sistema...
+2026-09-22 14:15:47,548 [INFO]       Verificando sessao ativa...
+2026-09-22 14:15:47,593 [INFO]       Sessao ativa detectada (N_ROBOTRON). Pulando login.
+2026-09-22 14:15:47,614 [INFO] 
+  Tentativa 1/5 para o pedido 3352 (Discord (Avulso))
+2026-09-22 14:15:47,614 [INFO] 
+  --- Pedido 3352 ---
+2026-09-22 14:15:53,953 [INFO]   Clicado em Filtrar.
+2026-09-22 14:15:58,001 [INFO]   [!] Pedido 3352 nao encontrado na grade de NFe do ERP. Provavelmente ja faturado.
+2026-09-22 14:15:58,001 [INFO]   Resultado Pedido 3352 (Discord (Avulso)): PULADO - Pedido nao localizado na grade (Ja Faturado)
+2026-09-22 14:15:58,283 [INFO]       [BD] Métricas exportadas em /Users/nevine/Documents/nfe/logs/metricas_nfe.json
+2026-09-22 14:16:32,340 [INFO] === Automacao NFe Avulsa: Pedido 3352 ===
+2026-09-22 14:16:33,085 [INFO] 
+  [ERP] Acessando sistema...
+2026-09-22 14:16:33,545 [INFO]       Verificando sessao ativa...
+2026-09-22 14:16:33,589 [INFO]       Sessao ativa detectada (N_ROBOTRON). Pulando login.
+2026-09-22 14:16:33,589 [INFO] 
+  Tentativa 1/5 para o pedido 3352 (Discord (Avulso))
+2026-09-22 14:16:33,589 [INFO] 
+  --- Pedido 3352 ---
+2026-09-22 14:16:39,625 [INFO]   Clicado em Filtrar.
+2026-09-22 14:16:43,672 [INFO]   [!] Pedido 3352 nao encontrado na grade de NFe do ERP. Provavelmente ja faturado.
+2026-09-22 14:16:43,672 [INFO]   Resultado Pedido 3352 (Discord (Avulso)): PULADO - Pedido nao localizado na grade (Ja Faturado)
+2026-09-22 14:16:43,825 [INFO]       [BD] Métricas exportadas em /Users/nevine/Documents/nfe/logs/metricas_nfe.json
+2026-09-22 14:27:03,552 [INFO] === Automacao NFe Avulsa: Pedido 3352 ===
+2026-09-22 14:27:04,294 [INFO] 
+  [ERP] Acessando sistema...
+2026-09-22 14:27:04,867 [INFO]       Verificando sessao ativa...
+2026-09-22 14:27:04,909 [INFO]       Sessao ativa detectada (N_ROBOTRON). Pulando login.
+2026-09-22 14:27:04,910 [INFO] 
+  Tentativa 1/5 para o pedido 3352 (Discord (Avulso))
+2026-09-22 14:27:04,910 [INFO] 
+  --- Pedido 3352 ---
+2026-09-22 14:27:11,065 [INFO]   Clicado em Filtrar.
+2026-09-22 14:27:15,117 [INFO]   [!] Pedido 3352 nao encontrado na grade de NFe do ERP. Provavelmente ja faturado.
+2026-09-22 14:27:15,117 [INFO]   Resultado Pedido 3352 (Discord (Avulso)): PULADO - Pedido nao localizado na grade (Ja Faturado)
+2026-09-22 14:27:15,155 [INFO]       [BD] Métricas exportadas em /Users/nevine/Documents/nfe/logs/metricas_nfe.json
+2026-09-22 14:27:45,789 [INFO] === Automacao NFe Avulsa: Pedido 3353 ===
+2026-09-22 14:27:46,539 [INFO] 
+  [ERP] Acessando sistema...
+2026-09-22 14:27:46,965 [INFO]       Verificando sessao ativa...
+2026-09-22 14:27:47,008 [INFO]       Sessao ativa detectada (N_ROBOTRON). Pulando login.
+2026-09-22 14:27:47,009 [INFO] 
+  Tentativa 1/5 para o pedido 3353 (Discord (Avulso))
+2026-09-22 14:27:47,009 [INFO] 
+  --- Pedido 3353 ---
+2026-09-22 14:27:53,330 [INFO]   Clicado em Filtrar.
+2026-09-22 14:27:57,380 [INFO]   [!] Pedido 3353 nao encontrado na grade de NFe do ERP. Provavelmente ja faturado.
+2026-09-22 14:27:57,380 [INFO]   Resultado Pedido 3353 (Discord (Avulso)): PULADO - Pedido nao localizado na grade (Ja Faturado)
+2026-09-22 14:27:57,416 [INFO]       [BD] Métricas exportadas em /Users/nevine/Documents/nfe/logs/metricas_nfe.json
